@@ -20,6 +20,7 @@
 #include "pretty-print.h"
 #include "process-util.h"
 #include "rlimit-util.h"
+#include "sigbus.h"
 #include "signal-util.h"
 #include "socket-netlink.h"
 #include "socket-util.h"
@@ -107,7 +108,7 @@ static int spawn_child(const char* child, char** argv) {
 
         r = fd_nonblock(fd[0], true);
         if (r < 0)
-                log_warning_errno(errno, "Failed to set child pipe to non-blocking: %m");
+                log_warning_errno(r, "Failed to set child pipe to non-blocking: %m");
 
         return fd[0];
 }
@@ -534,24 +535,6 @@ static int dispatch_http_event(sd_event_source *event,
  **********************************************************************
  **********************************************************************/
 
-static int setup_signals(RemoteServer *s) {
-        int r;
-
-        assert(s);
-
-        assert_se(sigprocmask_many(SIG_SETMASK, NULL, SIGINT, SIGTERM, -1) >= 0);
-
-        r = sd_event_add_signal(s->events, &s->sigterm_event, SIGTERM, NULL, s);
-        if (r < 0)
-                return r;
-
-        r = sd_event_add_signal(s->events, &s->sigint_event, SIGINT, NULL, s);
-        if (r < 0)
-                return r;
-
-        return 0;
-}
-
 static int setup_raw_socket(RemoteServer *s, const char *address) {
         int fd;
 
@@ -579,9 +562,9 @@ static int create_remoteserver(
         if (r < 0)
                 return r;
 
-        r = setup_signals(s);
+        r = sd_event_set_signal_exit(s->events, true);
         if (r < 0)
-                return log_error_errno(r, "Failed to set up signals: %m");
+                return log_error_errno(r, "Failed to install SIGINT/SIGTERM handlers: %m");
 
         n = sd_listen_fds(true);
         if (n < 0)
@@ -1089,6 +1072,8 @@ static int run(int argc, char **argv) {
 
         /* The journal merging logic potentially needs a lot of fds. */
         (void) rlimit_nofile_bump(HIGH_RLIMIT_NOFILE);
+
+        sigbus_install();
 
         r = parse_config();
         if (r < 0)

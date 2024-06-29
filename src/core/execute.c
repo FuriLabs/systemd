@@ -160,7 +160,7 @@ static int shift_fds(int fds[], size_t n_fds) {
         return 0;
 }
 
-static int flags_fds(
+static int flag_fds(
                 const int fds[],
                 size_t n_socket_fds,
                 size_t n_fds,
@@ -168,10 +168,8 @@ static int flags_fds(
 
         int r;
 
-        if (n_fds <= 0)
-                return 0;
-
         assert(fds);
+        assert(fds || n_fds == 0);
 
         /* Drops/Sets O_NONBLOCK and FD_CLOEXEC from the file flags.
          * O_NONBLOCK only applies to socket activation though. */
@@ -240,7 +238,7 @@ static void exec_context_tty_reset(const ExecContext *context, const ExecParamet
 
         if (p && p->stdin_fd >= 0) {
                 fd = xopenat_lock(p->stdin_fd, NULL,
-                                  O_RDONLY|O_CLOEXEC|O_NONBLOCK|O_NOCTTY, 0, 0, LOCK_BSD, LOCK_EX);
+                                  O_RDONLY|O_CLOEXEC|O_NONBLOCK|O_NOCTTY, LOCK_BSD, LOCK_EX);
                 if (fd < 0)
                         return;
         } else if (path) {
@@ -3920,7 +3918,7 @@ static int setup_ephemeral(const ExecContext *context, ExecRuntime *runtime) {
                  */
                 r = chattr_fd(fd, FS_NOCOW_FL, FS_NOCOW_FL, NULL);
                 if (r < 0)
-                        log_debug_errno(fd, "Failed to disable copy-on-write for %s, ignoring: %m", runtime->ephemeral_copy);
+                        log_debug_errno(r, "Failed to disable copy-on-write for %s, ignoring: %m", runtime->ephemeral_copy);
         }
 
         r = send_one_fd(runtime->ephemeral_storage_socket[1], fd, MSG_DONTWAIT);
@@ -4404,7 +4402,7 @@ static int close_remaining_fds(
                 const int *fds, size_t n_fds) {
 
         size_t n_dont_close = 0;
-        int dont_close[n_fds + 14];
+        int dont_close[n_fds + 15];
 
         assert(params);
 
@@ -4439,6 +4437,8 @@ static int close_remaining_fds(
 
         if (user_lookup_fd >= 0)
                 dont_close[n_dont_close++] = user_lookup_fd;
+
+        assert(n_dont_close <= ELEMENTSOF(dont_close));
 
         return close_all_fds(dont_close, n_dont_close);
 }
@@ -4899,6 +4899,8 @@ static int exec_child(
         log_forget_fds();
         log_set_open_when_needed(true);
         log_settle_target();
+        if (context->log_level_max >= 0)
+                log_set_max_level(context->log_level_max);
 
         /* In case anything used libc syslog(), close this here, too */
         closelog();
@@ -5230,6 +5232,16 @@ static int exec_child(
         }
 
         if (context->utmp_id) {
+                _cleanup_free_ char *username_alloc = NULL;
+
+                if (!username && context->utmp_mode == EXEC_UTMP_USER) {
+                        username_alloc = uid_to_name(uid_is_valid(uid) ? uid : saved_uid);
+                        if (!username_alloc) {
+                                *exit_status = EXIT_USER;
+                                return log_oom();
+                        }
+                }
+
                 const char *line = context->tty_path ?
                         (path_startswith(context->tty_path, "/dev/") ?: context->tty_path) :
                         NULL;
@@ -5238,7 +5250,7 @@ static int exec_child(
                                       context->utmp_mode == EXEC_UTMP_INIT  ? INIT_PROCESS :
                                       context->utmp_mode == EXEC_UTMP_LOGIN ? LOGIN_PROCESS :
                                       USER_PROCESS,
-                                      username);
+                                      username ?: username_alloc);
         }
 
         if (uid_is_valid(uid)) {
@@ -5508,12 +5520,14 @@ static int exec_child(
 
                 if (ns_type_supported(NAMESPACE_IPC)) {
                         r = setup_shareable_ns(runtime->shared->ipcns_storage_socket, CLONE_NEWIPC);
-                        if (r == -EPERM)
-                                log_unit_warning_errno(unit, r,
-                                                       "PrivateIPC=yes is configured, but IPC namespace setup failed, ignoring: %m");
-                        else if (r < 0) {
-                                *exit_status = EXIT_NAMESPACE;
-                                return log_unit_error_errno(unit, r, "Failed to set up IPC namespacing: %m");
+                        if (r < 0) {
+                                if (ERRNO_IS_PRIVILEGE(r))
+                                        log_unit_warning_errno(unit, r,
+                                                               "PrivateIPC=yes is configured, but IPC namespace setup failed, ignoring: %m");
+                                else {
+                                        *exit_status = EXIT_NAMESPACE;
+                                        return log_unit_error_errno(unit, r, "Failed to set up IPC namespacing: %m");
+                                }
                         }
                 } else if (context->ipc_namespace_path) {
                         *exit_status = EXIT_NAMESPACE;
@@ -5656,7 +5670,7 @@ static int exec_child(
         if (r >= 0)
                 r = shift_fds(fds, n_fds);
         if (r >= 0)
-                r = flags_fds(fds, n_socket_fds, n_fds, context->non_blocking);
+                r = flag_fds(fds, n_socket_fds, n_fds, context->non_blocking);
         if (r < 0) {
                 *exit_status = EXIT_FDS;
                 return log_unit_error_errno(unit, r, "Failed to adjust passed file descriptors: %m");
@@ -7132,7 +7146,7 @@ void exec_context_revert_tty(ExecContext *c) {
         if (!path)
                 return;
 
-        fd = open(path, O_PATH|O_CLOEXEC);
+        fd = open(path, O_PATH|O_CLOEXEC); /* Pin the inode */
         if (fd < 0)
                 return (void) log_full_errno(errno == ENOENT ? LOG_DEBUG : LOG_WARNING, errno,
                                              "Failed to open TTY inode of '%s' to adjust ownership/access mode, ignoring: %m",
@@ -7151,7 +7165,7 @@ void exec_context_revert_tty(ExecContext *c) {
 
         r = fchmod_and_chown(fd, TTY_MODE, 0, TTY_GID);
         if (r < 0)
-                log_warning_errno(r, "Failed to reset TTY ownership/access mode of %s, ignoring: %m", path);
+                log_warning_errno(r, "Failed to reset TTY ownership/access mode of %s to " UID_FMT ":" GID_FMT ", ignoring: %m", path, (uid_t) 0, (gid_t) TTY_GID);
 }
 
 int exec_context_get_clean_directories(

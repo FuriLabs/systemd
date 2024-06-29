@@ -49,9 +49,8 @@ static int test_socket_bind(
                         return log_unit_error_errno(u, r, "Failed to parse SocketBindAllow: %m");
         }
 
-        fprintf(stderr, "SocketBindAllow:");
-        LIST_FOREACH(socket_bind_items, bi, cc->socket_bind_allow)
-                cgroup_context_dump_socket_bind_item(bi, stderr);
+        fprintf(stderr, "SocketBindAllow: ");
+        cgroup_context_dump_socket_bind_items(cc->socket_bind_allow, stderr);
         fputc('\n', stderr);
 
         STRV_FOREACH(rule, deny_rules) {
@@ -62,9 +61,8 @@ static int test_socket_bind(
                         return log_unit_error_errno(u, r, "Failed to parse SocketBindDeny: %m");
         }
 
-        fprintf(stderr, "SocketBindDeny:");
-        LIST_FOREACH(socket_bind_items, bi, cc->socket_bind_deny)
-                cgroup_context_dump_socket_bind_item(bi, stderr);
+        fprintf(stderr, "SocketBindDeny: ");
+        cgroup_context_dump_socket_bind_items(cc->socket_bind_deny, stderr);
         fputc('\n', stderr);
 
         exec_start = strjoin("-timeout --preserve-status -sSIGTERM 1s ", netcat_path, " -l ", port, " -vv");
@@ -85,7 +83,7 @@ static int test_socket_bind(
         while (!IN_SET(SERVICE(u)->state, SERVICE_DEAD, SERVICE_FAILED)) {
                 r = sd_event_run(m->event, UINT64_MAX);
                 if (r < 0)
-                        return log_error_errno(errno, "Event run failed %m");
+                        return log_error_errno(r, "Event run failed %m");
         }
 
         cld_code = SERVICE(u)->exec_command[SERVICE_EXEC_START]->exec_status.code;

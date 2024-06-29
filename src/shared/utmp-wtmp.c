@@ -184,6 +184,7 @@ int utmp_put_init_process(const char *id, pid_t pid, pid_t sid, const char *line
         int r;
 
         assert(id);
+        assert(ut_type != USER_PROCESS || user);
 
         init_timestamp(&store, 0);
 
@@ -226,7 +227,7 @@ int utmp_put_dead_process(const char *id, pid_t pid, int code, int status) {
         utmpx = utxent_start();
 
         /* Copy the whole string if it fits, or just the suffix without the terminating NUL. */
-        copy_suffix(store.ut_id, sizeof(store.ut_id), id);
+        copy_suffix(lookup.ut_id, sizeof(lookup.ut_id), id);
 
         found = getutxid(&lookup);
         if (!found)

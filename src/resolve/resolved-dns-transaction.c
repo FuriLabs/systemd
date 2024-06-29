@@ -74,6 +74,10 @@ static void dns_transaction_close_connection(
          * and the reply we might still get from the server will be eaten up instead of resulting in an ICMP
          * port unreachable error message. */
 
+        /* Skip the graveyard stuff when we're shutting down, since that requires running event loop */
+        if (!t->scope->manager->event || sd_event_get_state(t->scope->manager->event) == SD_EVENT_FINISHED)
+                use_graveyard = false;
+
         if (use_graveyard && t->dns_udp_fd >= 0 && t->sent && !t->received) {
                 r = manager_add_socket_to_graveyard(t->scope->manager, t->dns_udp_fd);
                 if (r < 0)
@@ -169,6 +173,9 @@ DnsTransaction* dns_transaction_gc(DnsTransaction *t) {
         /* Returns !NULL if we can't gc yet. */
 
         if (t->block_gc > 0)
+                return t;
+
+        if (t->wait_for_answer && IN_SET(t->state, DNS_TRANSACTION_PENDING, DNS_TRANSACTION_VALIDATING))
                 return t;
 
         if (set_isempty(t->notify_query_candidates) &&
@@ -627,9 +634,20 @@ static int on_stream_complete(DnsStream *s, int error) {
                 }
         }
 
-        if (error != 0)
-                LIST_FOREACH(transactions_by_stream, t, s->transactions)
+        if (error != 0) {
+                /* First, detach the stream from the server. Otherwise, transactions attached to this stream
+                 * may be restarted by on_transaction_stream_error() below with this stream. */
+                dns_stream_detach(s);
+
+                /* Do not use LIST_FOREACH() here, as
+                 *     on_transaction_stream_error()
+                 *         -> dns_transaction_complete_errno()
+                 *             -> dns_transaction_free()
+                 * may free multiple transactions in the list. */
+                DnsTransaction *t;
+                while ((t = s->transactions))
                         on_transaction_stream_error(t, error);
+        }
 
         return 0;
 }
@@ -1766,21 +1784,20 @@ static int dns_packet_append_zone(DnsPacket *p, DnsTransaction *t, DnsResourceKe
         return dns_packet_append_answer(p, answer, nscount);
 }
 
-static int dns_transaction_make_packet_mdns(DnsTransaction *t) {
+static int mdns_make_dummy_packet(DnsTransaction *t, DnsPacket **ret_packet, Set **ret_keys) {
         _cleanup_(dns_packet_unrefp) DnsPacket *p = NULL;
         _cleanup_set_free_ Set *keys = NULL;
-        unsigned qdcount, ancount = 0 /* avoid false maybe-uninitialized warning */, nscount;
         bool add_known_answers = false;
+        unsigned qdcount;
         usec_t ts;
         int r;
 
         assert(t);
+        assert(t->scope);
         assert(t->scope->protocol == DNS_PROTOCOL_MDNS);
+        assert(ret_packet);
+        assert(ret_keys);
 
-        /* Discard any previously prepared packet, so we can start over and coalesce again */
-        t->sent = dns_packet_unref(t->sent);
-
-        /* First, create a dummy packet to calculate packet size. */
         r = dns_packet_new_query(&p, t->scope->protocol, 0, false);
         if (r < 0)
                 return r;
@@ -1803,120 +1820,139 @@ static int dns_transaction_make_packet_mdns(DnsTransaction *t) {
         if (r < 0)
                 return r;
 
-        /*
-         * For mDNS, we want to coalesce as many open queries in pending transactions into one single
-         * query packet on the wire as possible. To achieve that, we iterate through all pending transactions
-         * in our current scope, and see whether their timing constraints allow them to be sent.
-         */
-
         assert_se(sd_event_now(t->scope->manager->event, CLOCK_BOOTTIME, &ts) >= 0);
 
-        for (bool restart = true; restart;) {
-                restart = false;
-                LIST_FOREACH(transactions_by_scope, other, t->scope->transactions) {
+        LIST_FOREACH(transactions_by_scope, other, t->scope->transactions) {
+
+                /* Skip ourselves */
+                if (other == t)
+                        continue;
+
+                if (other->state != DNS_TRANSACTION_PENDING)
+                        continue;
+
+                if (other->next_attempt_after > ts)
+                        continue;
+
+                if (!set_contains(keys, dns_transaction_key(other))) {
                         size_t saved_packet_size;
-                        bool append = false;
 
-                        /* Skip ourselves */
-                        if (other == t)
-                                continue;
-
-                        if (other->state != DNS_TRANSACTION_PENDING)
-                                continue;
-
-                        if (other->next_attempt_after > ts)
-                                continue;
-
-                        if (!set_contains(keys, dns_transaction_key(other))) {
-                                r = dns_packet_append_key(p, dns_transaction_key(other), 0, &saved_packet_size);
-                                /* If we can't stuff more questions into the packet, just give up.
-                                 * One of the 'other' transactions will fire later and take care of the rest. */
-                                if (r == -EMSGSIZE)
-                                        break;
-                                if (r < 0)
-                                        return r;
-
-                                r = dns_packet_append_zone(p, t, dns_transaction_key(other), NULL);
-                                if (r == -EMSGSIZE)
-                                        break;
-                                if (r < 0)
-                                        return r;
-
-                                append = true;
-                        }
-
-                        r = dns_transaction_prepare(other, ts);
-                        if (r < 0)
-                                return r;
-                        if (r == 0) {
-                                if (append)
-                                        dns_packet_truncate(p, saved_packet_size);
-
-                                /* In this case, not only this transaction, but multiple transactions may be
-                                 * freed. Hence, we need to restart the loop. */
-                                restart = true;
+                        r = dns_packet_append_key(p, dns_transaction_key(other), 0, &saved_packet_size);
+                        /* If we can't stuff more questions into the packet, just give up.
+                         * One of the 'other' transactions will fire later and take care of the rest. */
+                        if (r == -EMSGSIZE)
                                 break;
-                        }
-
-                        usec_t timeout = transaction_get_resend_timeout(other);
-                        r = dns_transaction_setup_timeout(other, timeout, usec_add(ts, timeout));
                         if (r < 0)
                                 return r;
 
-                        if (dns_key_is_shared(dns_transaction_key(other)))
-                                add_known_answers = true;
-
-                        if (append) {
-                                r = set_ensure_put(&keys, &dns_resource_key_hash_ops, dns_transaction_key(other));
-                                if (r < 0)
-                                        return r;
-                        }
-
-                        qdcount++;
-                        if (qdcount >= UINT16_MAX)
+                        r = dns_packet_append_zone(p, t, dns_transaction_key(other), NULL);
+                        if (r == -EMSGSIZE) {
+                                dns_packet_truncate(p, saved_packet_size);
                                 break;
+                        }
+                        if (r < 0)
+                                return r;
+
+                        r = set_ensure_put(&keys, &dns_resource_key_hash_ops, dns_transaction_key(other));
+                        if (r < 0)
+                                return r;
                 }
+
+                r = dns_transaction_prepare(other, ts);
+                if (r < 0)
+                        return r;
+                if (r == 0)
+                        /* In this case, not only this transaction, but multiple transactions may be
+                         * freed. Hence, we need to restart the loop. */
+                        return -EAGAIN;
+
+                usec_t timeout = transaction_get_resend_timeout(other);
+                r = dns_transaction_setup_timeout(other, timeout, usec_add(ts, timeout));
+                if (r < 0)
+                        return r;
+
+                if (dns_key_is_shared(dns_transaction_key(other)))
+                        add_known_answers = true;
+
+                qdcount++;
+                if (qdcount >= UINT16_MAX)
+                        break;
         }
 
-        /* Append known answer section if we're asking for any shared record */
+        DNS_PACKET_HEADER(p)->qdcount = htobe16(qdcount);
+
+        /* Append known answers section if we're asking for any shared record */
         if (add_known_answers) {
                 r = dns_cache_export_shared_to_packet(&t->scope->cache, p, ts, 0);
                 if (r < 0)
                         return r;
+        }
 
-                ancount = be16toh(DNS_PACKET_HEADER(p)->ancount);
+        *ret_packet = TAKE_PTR(p);
+        *ret_keys = TAKE_PTR(keys);
+        return add_known_answers;
+}
+
+static int dns_transaction_make_packet_mdns(DnsTransaction *t) {
+        _cleanup_(dns_packet_unrefp) DnsPacket *p = NULL, *dummy = NULL;
+        _cleanup_set_free_ Set *keys = NULL;
+        bool add_known_answers;
+        DnsResourceKey *k;
+        unsigned c;
+        int r;
+
+        assert(t);
+        assert(t->scope->protocol == DNS_PROTOCOL_MDNS);
+
+        /* Discard any previously prepared packet, so we can start over and coalesce again */
+        t->sent = dns_packet_unref(t->sent);
+
+        /* First, create a dummy packet to calculate the number of known answers to be appended in the first packet. */
+        for (;;) {
+                r = mdns_make_dummy_packet(t, &dummy, &keys);
+                if (r == -EAGAIN)
+                        continue;
+                if (r < 0)
+                        return r;
+
+                add_known_answers = r;
+                break;
         }
 
         /* Then, create actual packet. */
-        p = dns_packet_unref(p);
         r = dns_packet_new_query(&p, t->scope->protocol, 0, false);
         if (r < 0)
                 return r;
 
         /* Questions */
-        DnsResourceKey *k;
+        c = 0;
         SET_FOREACH(k, keys) {
                 r = dns_packet_append_key(p, k, 0, NULL);
                 if (r < 0)
                         return r;
+                c++;
         }
-        DNS_PACKET_HEADER(p)->qdcount = htobe16(qdcount);
+        DNS_PACKET_HEADER(p)->qdcount = htobe16(c);
 
         /* Known answers */
         if (add_known_answers) {
-                r = dns_cache_export_shared_to_packet(&t->scope->cache, p, ts, ancount);
+                usec_t ts;
+
+                assert_se(sd_event_now(t->scope->manager->event, CLOCK_BOOTTIME, &ts) >= 0);
+
+                r = dns_cache_export_shared_to_packet(&t->scope->cache, p, ts, be16toh(DNS_PACKET_HEADER(dummy)->ancount));
                 if (r < 0)
                         return r;
         }
 
         /* Authorities */
-        nscount = 0;
+        c = 0;
         SET_FOREACH(k, keys) {
-                r = dns_packet_append_zone(p, t, k, &nscount);
+                r = dns_packet_append_zone(p, t, k, &c);
                 if (r < 0)
                         return r;
         }
-        DNS_PACKET_HEADER(p)->nscount = htobe16(nscount);
+        DNS_PACKET_HEADER(p)->nscount = htobe16(c);
 
         t->sent = TAKE_PTR(p);
         return 0;
@@ -2176,7 +2212,7 @@ static int dns_transaction_add_dnssec_transaction(DnsTransaction *t, DnsResource
         return 1;
 }
 
-static int dns_transaction_request_dnssec_rr(DnsTransaction *t, DnsResourceKey *key) {
+static int dns_transaction_request_dnssec_rr_full(DnsTransaction *t, DnsResourceKey *key, DnsTransaction **ret) {
         _cleanup_(dns_answer_unrefp) DnsAnswer *a = NULL;
         DnsTransaction *aux;
         int r;
@@ -2193,13 +2229,18 @@ static int dns_transaction_request_dnssec_rr(DnsTransaction *t, DnsResourceKey *
                 if (r < 0)
                         return r;
 
+                if (ret)
+                        *ret = NULL;
                 return 0;
         }
 
         /* This didn't work, ask for it via the network/cache then. */
         r = dns_transaction_add_dnssec_transaction(t, key, &aux);
-        if (r == -ELOOP) /* This would result in a cyclic dependency */
+        if (r == -ELOOP) { /* This would result in a cyclic dependency */
+                if (ret)
+                        *ret = NULL;
                 return 0;
+        }
         if (r < 0)
                 return r;
 
@@ -2207,9 +2248,17 @@ static int dns_transaction_request_dnssec_rr(DnsTransaction *t, DnsResourceKey *
                 r = dns_transaction_go(aux);
                 if (r < 0)
                         return r;
+                if (ret)
+                        *ret = aux;
         }
 
         return 1;
+}
+
+static int dns_transaction_request_dnssec_rr(DnsTransaction *t, DnsResourceKey *key) {
+        assert(t);
+        assert(key);
+        return dns_transaction_request_dnssec_rr_full(t, key, NULL);
 }
 
 static int dns_transaction_negative_trust_anchor_lookup(DnsTransaction *t, const char *name) {
@@ -2312,6 +2361,8 @@ static bool dns_transaction_dnssec_supported_full(DnsTransaction *t) {
 int dns_transaction_request_dnssec_keys(DnsTransaction *t) {
         DnsResourceRecord *rr;
 
+        /* Have we already requested a record that would be sufficient to validate an insecure delegation? */
+        bool chased_insecure = false;
         int r;
 
         assert(t);
@@ -2324,11 +2375,11 @@ int dns_transaction_request_dnssec_keys(DnsTransaction *t) {
          * - For RRSIG we get the matching DNSKEY
          * - For DNSKEY we get the matching DS
          * - For unsigned SOA/NS we get the matching DS
-         * - For unsigned CNAME/DNAME/DS we get the parent SOA RR
-         * - For other unsigned RRs we get the matching SOA RR
+         * - For unsigned CNAME/DNAME/DS we get the parent DS RR
+         * - For other unsigned RRs we get the matching DS RR
          * - For SOA/NS queries with no matching response RR, and no NSEC/NSEC3, the DS RR
-         * - For DS queries with no matching response RRs, and no NSEC/NSEC3, the parent's SOA RR
-         * - For other queries with no matching response RRs, and no NSEC/NSEC3, the SOA RR
+         * - For DS queries with no matching response RRs, and no NSEC/NSEC3, the parent's DS RR
+         * - For other queries with no matching response RRs, and no NSEC/NSEC3, the DS RR
          */
 
         if (FLAGS_SET(t->query_flags, SD_RESOLVED_NO_VALIDATE) || t->scope->dnssec_mode == DNSSEC_NO)
@@ -2355,6 +2406,7 @@ int dns_transaction_request_dnssec_keys(DnsTransaction *t) {
                 case DNS_TYPE_RRSIG: {
                         /* For each RRSIG we request the matching DNSKEY */
                         _cleanup_(dns_resource_key_unrefp) DnsResourceKey *dnskey = NULL;
+                        DnsTransaction *aux;
 
                         /* If this RRSIG is about a DNSKEY RR and the
                          * signer is the same as the owner, then we
@@ -2391,9 +2443,22 @@ int dns_transaction_request_dnssec_keys(DnsTransaction *t) {
 
                         log_debug("Requesting DNSKEY to validate transaction %" PRIu16" (%s, RRSIG with key tag: %" PRIu16 ").",
                                   t->id, dns_resource_key_name(rr->key), rr->rrsig.key_tag);
-                        r = dns_transaction_request_dnssec_rr(t, dnskey);
+                        r = dns_transaction_request_dnssec_rr_full(t, dnskey, &aux);
                         if (r < 0)
                                 return r;
+
+                        /* If we are requesting a DNSKEY, we can anticiapte that we will want the matching DS
+                         * in the near future. Let's request it in advance so we don't have to wait in the
+                         * common case. */
+                        if (aux) {
+                                _cleanup_(dns_resource_key_unrefp) DnsResourceKey *ds =
+                                        dns_resource_key_new(rr->key->class, DNS_TYPE_DS, dns_resource_key_name(dnskey));
+                                if (!ds)
+                                        return -ENOMEM;
+                                r = dns_transaction_request_dnssec_rr(t, ds);
+                                if (r < 0)
+                                        return r;
+                        }
                         break;
                 }
 
@@ -2460,6 +2525,10 @@ int dns_transaction_request_dnssec_keys(DnsTransaction *t) {
                                         return r;
                                 if (r == 0)
                                         continue;
+
+                                /* If we were looking for the DS RR, don't request it again. */
+                                if (dns_transaction_key(t)->type == DNS_TYPE_DS)
+                                        continue;
                         }
 
                         r = dnssec_has_rrsig(t->answer, rr->key);
@@ -2468,6 +2537,7 @@ int dns_transaction_request_dnssec_keys(DnsTransaction *t) {
                         if (r > 0)
                                 continue;
 
+                        chased_insecure = true;
                         ds = dns_resource_key_new(rr->key->class, DNS_TYPE_DS, dns_resource_key_name(rr->key));
                         if (!ds)
                                 return -ENOMEM;
@@ -2484,11 +2554,11 @@ int dns_transaction_request_dnssec_keys(DnsTransaction *t) {
                 case DNS_TYPE_DS:
                 case DNS_TYPE_CNAME:
                 case DNS_TYPE_DNAME: {
-                        _cleanup_(dns_resource_key_unrefp) DnsResourceKey *soa = NULL;
+                        _cleanup_(dns_resource_key_unrefp) DnsResourceKey *ds = NULL;
                         const char *name;
 
                         /* CNAMEs and DNAMEs cannot be located at a
-                         * zone apex, hence ask for the parent SOA for
+                         * zone apex, hence ask for the parent DS for
                          * unsigned CNAME/DNAME RRs, maybe that's the
                          * apex. But do all that only if this is
                          * actually a response to our original
@@ -2522,25 +2592,40 @@ int dns_transaction_request_dnssec_keys(DnsTransaction *t) {
                         if (r == 0)
                                 continue;
 
-                        soa = dns_resource_key_new(rr->key->class, DNS_TYPE_SOA, name);
-                        if (!soa)
+                        ds = dns_resource_key_new(rr->key->class, DNS_TYPE_DS, name);
+                        if (!ds)
                                 return -ENOMEM;
 
-                        log_debug("Requesting parent SOA to validate transaction %" PRIu16 " (%s, unsigned CNAME/DNAME/DS RRset).",
+                        log_debug("Requesting parent DS to validate transaction %" PRIu16 " (%s, unsigned CNAME/DNAME/DS RRset).",
                                   t->id, dns_resource_key_name(rr->key));
-                        r = dns_transaction_request_dnssec_rr(t, soa);
+                        r = dns_transaction_request_dnssec_rr(t, ds);
                         if (r < 0)
                                 return r;
+
+                        if (t->scope->dnssec_mode == DNSSEC_ALLOW_DOWNGRADE && dns_name_is_root(name)) {
+                                _cleanup_(dns_resource_key_unrefp) DnsResourceKey *soa = NULL;
+                                /* We made it all the way to the root zone. If we are in allow-downgrade
+                                 * mode, we need to make at least one request that we can be certain should
+                                 * have been signed, to test for servers that are not dnssec aware. */
+                                soa = dns_resource_key_new(rr->key->class, DNS_TYPE_SOA, name);
+                                if (!soa)
+                                        return -ENOMEM;
+
+                                log_debug("Requesting root zone SOA to probe dnssec support.");
+                                r = dns_transaction_request_dnssec_rr(t, soa);
+                                if (r < 0)
+                                        return r;
+                        }
 
                         break;
                 }
 
                 default: {
-                        _cleanup_(dns_resource_key_unrefp) DnsResourceKey *soa = NULL;
+                        _cleanup_(dns_resource_key_unrefp) DnsResourceKey *ds = NULL;
 
                         /* For other unsigned RRsets (including
                          * NSEC/NSEC3!), look for proof the zone is
-                         * unsigned, by requesting the SOA RR of the
+                         * unsigned, by requesting the DS RR of the
                          * zone. However, do so only if they are
                          * directly relevant to our original
                          * question. */
@@ -2557,13 +2642,13 @@ int dns_transaction_request_dnssec_keys(DnsTransaction *t) {
                         if (r > 0)
                                 continue;
 
-                        soa = dns_resource_key_new(rr->key->class, DNS_TYPE_SOA, dns_resource_key_name(rr->key));
-                        if (!soa)
+                        ds = dns_resource_key_new(rr->key->class, DNS_TYPE_DS, dns_resource_key_name(rr->key));
+                        if (!ds)
                                 return -ENOMEM;
 
-                        log_debug("Requesting SOA to validate transaction %" PRIu16 " (%s, unsigned non-SOA/NS RRset <%s>).",
+                        log_debug("Requesting DS to validate transaction %" PRIu16 " (%s, unsigned non-SOA/NS RRset <%s>).",
                                   t->id, dns_resource_key_name(rr->key), dns_resource_record_to_string(rr));
-                        r = dns_transaction_request_dnssec_rr(t, soa);
+                        r = dns_transaction_request_dnssec_rr(t, ds);
                         if (r < 0)
                                 return r;
                         break;
@@ -2578,49 +2663,38 @@ int dns_transaction_request_dnssec_keys(DnsTransaction *t) {
         if (r < 0)
                 return r;
         if (r > 0) {
-                const char *name, *signed_status;
-                uint16_t type = 0;
+                const char *name = dns_resource_key_name(dns_transaction_key(t));
+                bool was_signed = dns_answer_contains_nsec_or_nsec3(t->answer);
 
-                name = dns_resource_key_name(dns_transaction_key(t));
-                signed_status = dns_answer_contains_nsec_or_nsec3(t->answer) ? "signed" : "unsigned";
+                /* If the response is empty, seek the DS for this name, just in case we're at a zone cut
+                 * already, unless we just requested the DS, in which case we have to ask the parent to make
+                 * progress.
+                 *
+                 * If this was an SOA or NS request, we could also skip to the parent, but in real world
+                 * setups there are too many broken DNS servers (Hello, incapdns.net!) where non-terminal
+                 * zones return NXDOMAIN even though they have further children. */
 
-                /* If this was a SOA or NS request, then check if there's a DS RR for the same domain. Note that this
-                 * could also be used as indication that we are not at a zone apex, but in real world setups there are
-                 * too many broken DNS servers (Hello, incapdns.net!) where non-terminal zones return NXDOMAIN even
-                 * though they have further children. If this was a DS request, then it's signed when the parent zone
-                 * is signed, hence ask the parent SOA in that case. If this was any other RR then ask for the SOA RR,
-                 * to see if that is signed. */
-
-                if (dns_transaction_key(t)->type == DNS_TYPE_DS) {
-                        r = dns_name_parent(&name);
-                        if (r > 0) {
-                                type = DNS_TYPE_SOA;
-                                log_debug("Requesting parent SOA (%s %s) to validate transaction %" PRIu16 " (%s, %s empty DS response).",
-                                          special_glyph(SPECIAL_GLYPH_ARROW_RIGHT), name, t->id,
-                                          dns_resource_key_name(dns_transaction_key(t)), signed_status);
-                        } else
+                if (chased_insecure || was_signed)
+                        /* In this case we already reqeusted what we need above. */
+                        name = NULL;
+                else if (dns_transaction_key(t)->type == DNS_TYPE_DS)
+                        /* If the DS response is empty, we'll walk up the dns labels requesting DS until we
+                         * find a referral to the SOA or hit it anyway and get a positive DS response. */
+                        if (dns_name_parent(&name) <= 0)
                                 name = NULL;
 
-                } else if (IN_SET(dns_transaction_key(t)->type, DNS_TYPE_SOA, DNS_TYPE_NS)) {
-
-                        type = DNS_TYPE_DS;
-                        log_debug("Requesting DS (%s %s) to validate transaction %" PRIu16 " (%s, %s empty SOA/NS response).",
-                                  special_glyph(SPECIAL_GLYPH_ARROW_RIGHT), name, t->id, name, signed_status);
-
-                } else {
-                        type = DNS_TYPE_SOA;
-                        log_debug("Requesting SOA (%s %s) to validate transaction %" PRIu16 " (%s, %s empty non-SOA/NS/DS response).",
-                                  special_glyph(SPECIAL_GLYPH_ARROW_RIGHT), name, t->id, name, signed_status);
-                }
-
                 if (name) {
-                        _cleanup_(dns_resource_key_unrefp) DnsResourceKey *soa = NULL;
+                        _cleanup_(dns_resource_key_unrefp) DnsResourceKey *ds = NULL;
 
-                        soa = dns_resource_key_new(dns_transaction_key(t)->class, type, name);
-                        if (!soa)
+                        log_debug("Requesting DS (%s %s) to validate transaction %" PRIu16 " (%s empty response).",
+                                  special_glyph(SPECIAL_GLYPH_ARROW_RIGHT), name, t->id,
+                                  dns_resource_key_name(dns_transaction_key(t)));
+
+                        ds = dns_resource_key_new(dns_transaction_key(t)->class, DNS_TYPE_DS, name);
+                        if (!ds)
                                 return -ENOMEM;
 
-                        r = dns_transaction_request_dnssec_rr(t, soa);
+                        r = dns_transaction_request_dnssec_rr(t, ds);
                         if (r < 0)
                                 return r;
                 }
@@ -2700,7 +2774,6 @@ static int dns_transaction_requires_rrsig(DnsTransaction *t, DnsResourceRecord *
                 DnsTransaction *dt;
 
                 /* For SOA or NS RRs we look for a matching DS transaction */
-
                 SET_FOREACH(dt, t->dnssec_transactions) {
 
                         if (dns_transaction_key(dt)->class != rr->key->class)
@@ -2708,7 +2781,7 @@ static int dns_transaction_requires_rrsig(DnsTransaction *t, DnsResourceRecord *
                         if (dns_transaction_key(dt)->type != DNS_TYPE_DS)
                                 continue;
 
-                        r = dns_name_equal(dns_resource_key_name(dns_transaction_key(dt)), dns_resource_key_name(rr->key));
+                        r = dns_name_endswith(dns_resource_key_name(rr->key), dns_resource_key_name(dns_transaction_key(dt)));
                         if (r < 0)
                                 return r;
                         if (r == 0)
@@ -2737,16 +2810,16 @@ static int dns_transaction_requires_rrsig(DnsTransaction *t, DnsResourceRecord *
                 DnsTransaction *dt;
 
                 /*
-                 * CNAME/DNAME RRs cannot be located at a zone apex, hence look directly for the parent SOA.
+                 * CNAME/DNAME RRs cannot be located at a zone apex, hence look directly for the parent DS.
                  *
-                 * DS RRs are signed if the parent is signed, hence also look at the parent SOA
+                 * DS RRs are signed if the parent is signed, hence also look at the parent DS
                  */
 
                 SET_FOREACH(dt, t->dnssec_transactions) {
 
                         if (dns_transaction_key(dt)->class != rr->key->class)
                                 continue;
-                        if (dns_transaction_key(dt)->type != DNS_TYPE_SOA)
+                        if (dns_transaction_key(dt)->type != DNS_TYPE_DS)
                                 continue;
 
                         if (!parent) {
@@ -2764,13 +2837,18 @@ static int dns_transaction_requires_rrsig(DnsTransaction *t, DnsResourceRecord *
                                 }
                         }
 
-                        r = dns_name_equal(dns_resource_key_name(dns_transaction_key(dt)), parent);
+                        r = dns_name_endswith(parent, dns_resource_key_name(dns_transaction_key(dt)));
                         if (r < 0)
                                 return r;
                         if (r == 0)
                                 continue;
 
-                        return FLAGS_SET(t->answer_query_flags, SD_RESOLVED_AUTHENTICATED);
+                        if (!FLAGS_SET(dt->answer_query_flags, SD_RESOLVED_AUTHENTICATED))
+                                return false;
+
+                        /* We expect this to be signed when the DS record exists, and don't expect it to be
+                         * signed when the DS record is proven not to exist. */
+                        return dns_answer_match_key(dt->answer, dns_transaction_key(dt), NULL);
                 }
 
                 return true;
@@ -2779,25 +2857,26 @@ static int dns_transaction_requires_rrsig(DnsTransaction *t, DnsResourceRecord *
         default: {
                 DnsTransaction *dt;
 
-                /* Any other kind of RR (including DNSKEY/NSEC/NSEC3). Let's see if our SOA lookup was authenticated */
+                /* Any other kind of RR (including DNSKEY/NSEC/NSEC3). Let's see if our DS lookup was authenticated */
 
                 SET_FOREACH(dt, t->dnssec_transactions) {
-
                         if (dns_transaction_key(dt)->class != rr->key->class)
                                 continue;
-                        if (dns_transaction_key(dt)->type != DNS_TYPE_SOA)
+                        if (dns_transaction_key(dt)->type != DNS_TYPE_DS)
                                 continue;
 
-                        r = dns_name_equal(dns_resource_key_name(dns_transaction_key(dt)), dns_resource_key_name(rr->key));
+                        r = dns_name_endswith(dns_resource_key_name(rr->key), dns_resource_key_name(dns_transaction_key(dt)));
                         if (r < 0)
                                 return r;
                         if (r == 0)
                                 continue;
 
-                        /* We found the transaction that was supposed to find the SOA RR for us. It was
-                         * successful, but found no RR for us. This means we are not at a zone cut. In this
-                         * case, we require authentication if the SOA lookup was authenticated too. */
-                        return FLAGS_SET(t->answer_query_flags, SD_RESOLVED_AUTHENTICATED);
+                        if (!FLAGS_SET(dt->answer_query_flags, SD_RESOLVED_AUTHENTICATED))
+                                return false;
+
+                        /* We expect this to be signed when the DS record exists, and don't expect it to be
+                         * signed when the DS record is proven not to exist. */
+                        return dns_answer_match_key(dt->answer, dns_transaction_key(dt), NULL);
                 }
 
                 return true;
@@ -2867,7 +2946,6 @@ static int dns_transaction_requires_nsec(DnsTransaction *t) {
         char key_str[DNS_RESOURCE_KEY_STRING_MAX];
         DnsTransaction *dt;
         const char *name;
-        uint16_t type = 0;
         int r;
 
         assert(t);
@@ -2902,43 +2980,37 @@ static int dns_transaction_requires_nsec(DnsTransaction *t) {
 
         name = dns_resource_key_name(dns_transaction_key(t));
 
-        if (dns_transaction_key(t)->type == DNS_TYPE_DS) {
-
-                /* We got a negative reply for this DS lookup? DS RRs are signed when their parent zone is signed,
-                 * hence check the parent SOA in this case. */
-
+        if (IN_SET(dns_transaction_key(t)->type, DNS_TYPE_DS, DNS_TYPE_CNAME, DNS_TYPE_DNAME)) {
+                /* We got a negative reply for this DS/CNAME/DNAME lookup? Check the parent in this case to
+                 * see if this answer should have been signed. */
                 r = dns_name_parent(&name);
                 if (r < 0)
                         return r;
                 if (r == 0)
                         return true;
+        }
 
-                type = DNS_TYPE_SOA;
-
-        } else if (IN_SET(dns_transaction_key(t)->type, DNS_TYPE_SOA, DNS_TYPE_NS))
-                /* We got a negative reply for this SOA/NS lookup? If so, check if there's a DS RR for this */
-                type = DNS_TYPE_DS;
-        else
-                /* For all other negative replies, check for the SOA lookup */
-                type = DNS_TYPE_SOA;
-
-        /* For all other RRs we check the SOA on the same level to see
+        /* For all other RRs we check the DS on the same level to see
          * if it's signed. */
 
         SET_FOREACH(dt, t->dnssec_transactions) {
-
                 if (dns_transaction_key(dt)->class != dns_transaction_key(t)->class)
                         continue;
-                if (dns_transaction_key(dt)->type != type)
+                if (dns_transaction_key(dt)->type != DNS_TYPE_DS)
                         continue;
 
-                r = dns_name_equal(dns_resource_key_name(dns_transaction_key(dt)), name);
+                r = dns_name_endswith(name, dns_resource_key_name(dns_transaction_key(dt)));
                 if (r < 0)
                         return r;
                 if (r == 0)
                         continue;
 
-                return FLAGS_SET(dt->answer_query_flags, SD_RESOLVED_AUTHENTICATED);
+                if (!FLAGS_SET(dt->answer_query_flags, SD_RESOLVED_AUTHENTICATED))
+                        return false;
+
+                /* We expect this to be signed when the DS record exists, and don't expect it to be signed
+                 * when the DS record is proven not to exist. */
+                return dns_answer_match_key(dt->answer, dns_transaction_key(dt), NULL);
         }
 
         /* If in doubt, require NSEC/NSEC3 */
@@ -3110,10 +3182,13 @@ static int dnssec_validate_records(
                 DnsTransaction *t,
                 Phase phase,
                 bool *have_nsec,
+                unsigned *nvalidations,
                 DnsAnswer **validated) {
 
         DnsResourceRecord *rr;
         int r;
+
+        assert(nvalidations);
 
         /* Returns negative on error, 0 if validation failed, 1 to restart validation, 2 when finished. */
 
@@ -3156,6 +3231,7 @@ static int dnssec_validate_records(
                                 &rrsig);
                 if (r < 0)
                         return r;
+                *nvalidations += r;
 
                 log_debug("Looking at %s: %s", strna(dns_resource_record_to_string(rr)), dnssec_result_to_string(result));
 
@@ -3353,7 +3429,8 @@ static int dnssec_validate_records(
                                            DNSSEC_SIGNATURE_EXPIRED,
                                            DNSSEC_NO_SIGNATURE))
                                         manager_dnssec_verdict(t->scope->manager, DNSSEC_BOGUS, rr->key);
-                                else /* DNSSEC_MISSING_KEY or DNSSEC_UNSUPPORTED_ALGORITHM */
+                                else /* DNSSEC_MISSING_KEY, DNSSEC_UNSUPPORTED_ALGORITHM,
+                                        or DNSSEC_TOO_MANY_VALIDATIONS */
                                         manager_dnssec_verdict(t->scope->manager, DNSSEC_INDETERMINATE, rr->key);
 
                                 /* This is a primary response to our question, and it failed validation.
@@ -3446,12 +3523,20 @@ int dns_transaction_validate_dnssec(DnsTransaction *t) {
                 return r;
 
         phase = DNSSEC_PHASE_DNSKEY;
-        for (;;) {
+        for (unsigned nvalidations = 0;;) {
                 bool have_nsec = false;
 
-                r = dnssec_validate_records(t, phase, &have_nsec, &validated);
+                r = dnssec_validate_records(t, phase, &have_nsec, &nvalidations, &validated);
                 if (r <= 0)
                         return r;
+
+                if (nvalidations > DNSSEC_VALIDATION_MAX) {
+                        /* This reply requires an onerous number of signature validations to verify. Let's
+                         * not waste our time trying, as this shouldn't happen for well-behaved domains
+                         * anyway. */
+                        t->answer_dnssec_result = DNSSEC_TOO_MANY_VALIDATIONS;
+                        return 0;
+                }
 
                 /* Try again as long as we managed to achieve something */
                 if (r == 1)

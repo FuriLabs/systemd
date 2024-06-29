@@ -65,7 +65,7 @@ static EFI_STATUS pack_cpio_one(
         char *a;
 
         assert(fname);
-        assert(contents_size || contents_size == 0);
+        assert(contents || contents_size == 0);
         assert(target_dir_prefix);
         assert(inode_counter);
         assert(cpio_buffer);
@@ -339,8 +339,11 @@ EFI_STATUS pack_cpio(
         if (err != EFI_SUCCESS)
                 return log_error_status(err, "Unable to open root directory: %m");
 
-        if (!dropin_dir)
+        if (!dropin_dir) {
                 dropin_dir = rel_dropin_dir = get_extra_dir(loaded_image->FilePath);
+                if (!dropin_dir)
+                        goto nothing;
+        }
 
         err = open_directory(root, dropin_dir, &extra_dir);
         if (err == EFI_NOT_FOUND)

@@ -85,7 +85,7 @@ static bool arg_rmdir = false;
 static bool arg_in_memory = false;
 static char **arg_argv = NULL;
 static char *arg_loop_ref = NULL;
-static ImagePolicy* arg_image_policy = NULL;
+static ImagePolicy *arg_image_policy = NULL;
 static bool arg_mtree_hash = true;
 
 STATIC_DESTRUCTOR_REGISTER(arg_image, freep);
@@ -94,6 +94,7 @@ STATIC_DESTRUCTOR_REGISTER(arg_path, freep);
 STATIC_DESTRUCTOR_REGISTER(arg_verity_settings, verity_settings_done);
 STATIC_DESTRUCTOR_REGISTER(arg_argv, strv_freep);
 STATIC_DESTRUCTOR_REGISTER(arg_loop_ref, freep);
+STATIC_DESTRUCTOR_REGISTER(arg_image_policy, image_policy_freep);
 
 static int help(void) {
         _cleanup_free_ char *link = NULL;
@@ -836,15 +837,15 @@ static int action_dissect(DissectedImage *m, LoopDevice *d) {
         else if (arg_json_format_flags & JSON_FORMAT_OFF)
                 printf("      Size: %s\n", FORMAT_BYTES(size));
 
-        printf(" Sec. Size: %" PRIu32 "\n", m->sector_size);
+        if (arg_json_format_flags & JSON_FORMAT_OFF) {
+                printf(" Sec. Size: %" PRIu32 "\n", m->sector_size);
 
-        printf("     Arch.: %s\n",
-               strna(architecture_to_string(dissected_image_architecture(m))));
+                printf("     Arch.: %s\n",
+                       strna(architecture_to_string(dissected_image_architecture(m))));
 
-        if (arg_json_format_flags & JSON_FORMAT_OFF)
                 putc('\n', stdout);
-
-        fflush(stdout);
+                fflush(stdout);
+        }
 
         r = dissected_image_acquire_metadata(m, 0);
         if (r == -ENXIO)
@@ -971,7 +972,7 @@ static int action_dissect(DissectedImage *m, LoopDevice *d) {
                 return log_oom();
 
         table_set_ersatz_string(t, TABLE_ERSATZ_DASH);
-        (void) table_set_align_percent(t, table_get_cell(t, 0, 7), 100);
+        (void) table_set_align_percent(t, table_get_cell(t, 0, 9), 100);
 
         for (PartitionDesignator i = 0; i < _PARTITION_DESIGNATOR_MAX; i++) {
                 DissectedPartition *p = m->partitions + i;

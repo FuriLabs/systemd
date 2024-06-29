@@ -775,7 +775,7 @@ static void dns_stub_query_complete(DnsQuery *query) {
 
                         cname_result = dns_query_process_cname_one(q);
                         if (cname_result == -ELOOP) { /* CNAME loop, let's send what we already have */
-                                log_debug_errno(r, "Detected CNAME loop, returning what we already have.");
+                                log_debug("Detected CNAME loop, returning what we already have.");
                                 (void) dns_stub_send_reply(q, q->answer_rcode);
                                 break;
                         }
@@ -837,12 +837,20 @@ static void dns_stub_query_complete(DnsQuery *query) {
                 break;
 
         case DNS_TRANSACTION_NO_SERVERS:
+                /* We're not configured to give answers for this question. Refuse it. */
+                (void) dns_stub_send_reply(q, DNS_RCODE_REFUSED);
+                break;
+
+        case DNS_TRANSACTION_RR_TYPE_UNSUPPORTED:
+                /* This RR Type is not implemented */
+                (void) dns_stub_send_reply(q, DNS_RCODE_NOTIMP);
+                break;
+
         case DNS_TRANSACTION_INVALID_REPLY:
         case DNS_TRANSACTION_ERRNO:
         case DNS_TRANSACTION_ABORTED:
         case DNS_TRANSACTION_DNSSEC_FAILED:
         case DNS_TRANSACTION_NO_TRUST_ANCHOR:
-        case DNS_TRANSACTION_RR_TYPE_UNSUPPORTED:
         case DNS_TRANSACTION_NETWORK_DOWN:
         case DNS_TRANSACTION_NO_SOURCE:
         case DNS_TRANSACTION_STUB_LOOP:

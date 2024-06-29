@@ -20,6 +20,12 @@ run() {
     "$@" |& tee "$RUN_OUT"
 }
 
+run_delv() {
+    # Since [0] delv no longer loads /etc/(bind/)bind.keys by default, so we
+    # have to do that explicitly for each invocation
+    run delv -a /etc/bind.keys "$@"
+}
+
 disable_ipv6() {
     sysctl -w net.ipv6.conf.all.disable_ipv6=1
 }
@@ -40,8 +46,19 @@ monitor_check_rr() (
     # displayed. We turn off pipefail for this, since we don't care about the
     # lhs of this pipe expression, we only care about the rhs' result to be
     # clean
-    timeout -v 30s journalctl -u resmontest.service --since "$since" -f --full | grep -m1 "$match"
+    # v255-only: match against a syslog tag as well to work around systemd/systemd#30886
+    timeout -v 30s journalctl --since "$since" -f --full _SYSTEMD_UNIT="resmontest.service" + SYSLOG_IDENTIFIER="resmontest" | grep -m1 "$match"
 )
+
+restart_resolved() {
+    systemctl stop systemd-resolved.service
+    (! systemctl is-failed systemd-resolved.service)
+    # Reset the restart counter since we call this method a bunch of times
+    # and can occasionally hit the default rate limit
+    systemctl reset-failed systemd-resolved.service
+    systemctl start systemd-resolved.service
+    systemctl service-log-level systemd-resolved.service debug
+}
 
 # Test for resolvectl, resolvconf
 systemctl unmask systemd-resolved.service
@@ -89,8 +106,7 @@ mkdir -p /run/systemd/resolved.conf.d
     echo "MulticastDNS=yes"
     echo "LLMNR=yes"
 } >/run/systemd/resolved.conf.d/mdns-llmnr.conf
-systemctl restart systemd-resolved.service
-systemctl service-log-level systemd-resolved.service debug
+restart_resolved
 # make sure networkd is not running.
 systemctl stop systemd-networkd.service
 # defaults to yes (both the global and per-link settings are yes)
@@ -115,8 +131,7 @@ assert_in 'no' "$(resolvectl llmnr hoge)"
     echo "MulticastDNS=resolve"
     echo "LLMNR=resolve"
 } >/run/systemd/resolved.conf.d/mdns-llmnr.conf
-systemctl restart systemd-resolved.service
-systemctl service-log-level systemd-resolved.service debug
+restart_resolved
 # set per-link setting
 resolvectl mdns hoge yes
 resolvectl llmnr hoge yes
@@ -136,8 +151,7 @@ assert_in 'no' "$(resolvectl llmnr hoge)"
     echo "MulticastDNS=no"
     echo "LLMNR=no"
 } >/run/systemd/resolved.conf.d/mdns-llmnr.conf
-systemctl restart systemd-resolved.service
-systemctl service-log-level systemd-resolved.service debug
+restart_resolved
 # set per-link setting
 resolvectl mdns hoge yes
 resolvectl llmnr hoge yes
@@ -222,7 +236,7 @@ ln -svf /etc/bind.keys /etc/bind/bind.keys
 # Start the services
 systemctl unmask systemd-networkd
 systemctl start systemd-networkd
-systemctl restart systemd-resolved
+restart_resolved
 # Create knot's runtime dir, since from certain version it's provided only by
 # the package and not created by tmpfiles/systemd
 if [[ ! -d /run/knot ]]; then
@@ -238,7 +252,8 @@ resolvectl status
 resolvectl log-level debug
 
 # Start monitoring queries
-systemd-run -u resmontest.service -p Type=notify resolvectl monitor
+systemd-run -u resmontest.service -p SyslogIdentifier=resmontest -p Type=notify resolvectl monitor
+systemd-run -u resmontest-json.service -p SyslogIdentifier=resmontest-json -p Type=notify resolvectl monitor --json=short
 
 # Check if all the zones are valid (zone-check always returns 0, so let's check
 # if it produces any errors/warnings)
@@ -266,16 +281,16 @@ knotc reload
 TIMESTAMP=$(date '+%F %T')
 # Issue: https://github.com/systemd/systemd/issues/23951
 # With IPv6 enabled
-run getent -s resolve hosts ns1.unsigned.test
-grep -qE "^fd00:dead:beef:cafe::1\s+ns1\.unsigned\.test" "$RUN_OUT"
+run getent -s resolve ahosts ns1.unsigned.test
+grep -qE "^fd00:dead:beef:cafe::1\s+STREAM\s+ns1\.unsigned\.test" "$RUN_OUT"
 monitor_check_rr "$TIMESTAMP" "ns1.unsigned.test IN AAAA fd00:dead:beef:cafe::1"
 # With IPv6 disabled
 # Issue: https://github.com/systemd/systemd/issues/23951
-# FIXME
-#disable_ipv6
-#run getent -s resolve hosts ns1.unsigned.test
-#grep -qE "^10\.0\.0\.1\s+ns1\.unsigned\.test" "$RUN_OUT"
-#monitor_check_rr "$TIMESTAMP" "ns1.unsigned.test IN A 10.0.0.1"
+disable_ipv6
+run getent -s resolve ahosts ns1.unsigned.test
+grep -qE "^10\.0\.0\.1\s+STREAM\s+ns1\.unsigned\.test" "$RUN_OUT"
+(! grep -qE "fd00:dead:beef:cafe::1" "$RUN_OUT")
+monitor_check_rr "$TIMESTAMP" "ns1.unsigned.test IN A 10.0.0.1"
 enable_ipv6
 
 # Issue: https://github.com/systemd/systemd/issues/18812
@@ -283,16 +298,17 @@ enable_ipv6
 # Follow-up issue: https://github.com/systemd/systemd/issues/23152
 # Follow-up PR: https://github.com/systemd/systemd/pull/23161
 # With IPv6 enabled
-run getent -s resolve hosts localhost
-grep -qE "^::1\s+localhost" "$RUN_OUT"
-run getent -s myhostname hosts localhost
-grep -qE "^::1\s+localhost" "$RUN_OUT"
+run getent -s resolve ahosts localhost
+grep -qE "^::1\s+STREAM\s+localhost" "$RUN_OUT"
+run getent -s myhostname ahosts localhost
+grep -qE "^::1\s+STREAM\s+localhost" "$RUN_OUT"
 # With IPv6 disabled
 disable_ipv6
-run getent -s resolve hosts localhost
-grep -qE "^127\.0\.0\.1\s+localhost" "$RUN_OUT"
-run getent -s myhostname hosts localhost
-grep -qE "^127\.0\.0\.1\s+localhost" "$RUN_OUT"
+run getent -s resolve ahosts localhost
+grep -qE "^127\.0\.0\.1\s+STREAM\s+localhost" "$RUN_OUT"
+(! grep -qE "::1" "$RUN_OUT")
+run getent -s myhostname ahosts localhost
+grep -qE "^127\.0\.0\.1\s+STREAM\s+localhost" "$RUN_OUT"
 enable_ipv6
 
 # Issue: https://github.com/systemd/systemd/issues/25088
@@ -350,15 +366,15 @@ grep -qF "unsigned.test IN MX 15 mail.unsigned.test" "$RUN_OUT"
 # Check the trust chain (with and without systemd-resolved in between
 # Issue: https://github.com/systemd/systemd/issues/22002
 # PR: https://github.com/systemd/systemd/pull/23289
-run delv @ns1.unsigned.test signed.test
+run_delv @ns1.unsigned.test signed.test
 grep -qF "; fully validated" "$RUN_OUT"
-run delv signed.test
+run_delv signed.test
 grep -qF "; fully validated" "$RUN_OUT"
 
 for addr in "${DNS_ADDRESSES[@]}"; do
-    run delv "@$addr" -t A mail.signed.test
+    run_delv "@$addr" -t A mail.signed.test
     grep -qF "; fully validated" "$RUN_OUT"
-    run delv "@$addr" -t AAAA mail.signed.test
+    run_delv "@$addr" -t AAAA mail.signed.test
     grep -qF "; fully validated" "$RUN_OUT"
 done
 run resolvectl query mail.signed.test
@@ -396,7 +412,7 @@ grep -qF "10.0.0.123" "$RUN_OUT"
 grep -qF "fd00:dead:beef:cafe::123" "$RUN_OUT"
 grep -qF "authenticated: yes" "$RUN_OUT"
 # Check OPENPGPKEY support
-run delv -t OPENPGPKEY 5a786cdc59c161cdafd818143705026636962198c66ed4c5b3da321e._openpgpkey.signed.test
+run_delv -t OPENPGPKEY 5a786cdc59c161cdafd818143705026636962198c66ed4c5b3da321e._openpgpkey.signed.test
 grep -qF "; fully validated" "$RUN_OUT"
 run resolvectl openpgp mr.smith@signed.test
 grep -qF "5a786cdc59c161cdafd818143705026636962198c66ed4c5b3da321e._openpgpkey.signed.test" "$RUN_OUT"
@@ -412,11 +428,11 @@ check_domain() {
     local addr
 
     for addr in "${DNS_ADDRESSES[@]}"; do
-        run delv "@$addr" -t "$record" "$domain"
+        run_delv "@$addr" -t "$record" "$domain"
         grep -qF "$message" "$RUN_OUT"
     done
 
-    run delv -t "$record" "$domain"
+    run_delv -t "$record" "$domain"
     grep -qF "$message" "$RUN_OUT"
 
     run resolvectl query "$domain"
@@ -452,9 +468,9 @@ grep -qE "^follow14\.final\.signed\.test\..+IN\s+NSEC\s+" "$RUN_OUT"
 # Check the trust chain (with and without systemd-resolved in between
 # Issue: https://github.com/systemd/systemd/issues/22002
 # PR: https://github.com/systemd/systemd/pull/23289
-run delv @ns1.unsigned.test sub.onlinesign.test
+run_delv @ns1.unsigned.test sub.onlinesign.test
 grep -qF "; fully validated" "$RUN_OUT"
-run delv sub.onlinesign.test
+run_delv sub.onlinesign.test
 grep -qF "; fully validated" "$RUN_OUT"
 
 run dig +short sub.onlinesign.test
@@ -468,11 +484,11 @@ run resolvectl query --legend=no -t TXT onlinesign.test
 grep -qF 'onlinesign.test IN TXT "hello from onlinesign"' "$RUN_OUT"
 
 for addr in "${DNS_ADDRESSES[@]}"; do
-    run delv "@$addr" -t A dual.onlinesign.test
+    run_delv "@$addr" -t A dual.onlinesign.test
     grep -qF "10.0.0.135" "$RUN_OUT"
-    run delv "@$addr" -t AAAA dual.onlinesign.test
+    run_delv "@$addr" -t AAAA dual.onlinesign.test
     grep -qF "fd00:dead:beef:cafe::135" "$RUN_OUT"
-    run delv "@$addr" -t ANY ipv6.onlinesign.test
+    run_delv "@$addr" -t ANY ipv6.onlinesign.test
     grep -qF "fd00:dead:beef:cafe::136" "$RUN_OUT"
 done
 run resolvectl query dual.onlinesign.test
@@ -562,8 +578,7 @@ if command -v nft >/dev/null; then
         echo "StaleRetentionSec=1d"
     } >/run/systemd/resolved.conf.d/test.conf
     ln -svf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
-    systemctl restart systemd-resolved.service
-    systemctl service-log-level systemd-resolved.service debug
+    restart_resolved
 
     run dig stale1.unsigned.test -t A
     grep -qE "NOERROR" "$RUN_OUT"

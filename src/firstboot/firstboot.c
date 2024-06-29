@@ -131,6 +131,8 @@ static void print_welcome(int rfd) {
         pn = os_release_pretty_name(pretty_name, os_name);
         ac = isempty(ansi_color) ? "0" : ansi_color;
 
+        (void) reset_terminal_fd(STDIN_FILENO, /* switch_to_text= */ false);
+
         if (colors_enabled())
                 printf("\nWelcome to your new installation of \x1B[%sm%s\x1B[0m!\n", ac, pn);
         else
@@ -454,6 +456,20 @@ static int process_locale(int rfd) {
         return 1;
 }
 
+static bool keymap_exists_bool(const char *name) {
+        return keymap_exists(name) > 0;
+}
+
+static typeof(&keymap_is_valid) determine_keymap_validity_func(int rfd) {
+        int r;
+
+        r = dir_fd_is_root(rfd);
+        if (r < 0)
+                log_debug_errno(r, "Unable to determine if operating on host root directory, assuming we are: %m");
+
+        return r != 0 ? keymap_exists_bool : keymap_is_valid;
+}
+
 static int prompt_keymap(int rfd) {
         _cleanup_strv_free_ char **kmaps = NULL;
         int r;
@@ -485,7 +501,7 @@ static int prompt_keymap(int rfd) {
         print_welcome(rfd);
 
         return prompt_loop("Please enter system keymap name or number",
-                           kmaps, 60, keymap_is_valid, &arg_keymap);
+                           kmaps, 60, determine_keymap_validity_func(rfd), &arg_keymap);
 }
 
 static int process_keymap(int rfd) {
@@ -1208,7 +1224,8 @@ static int process_reset(int rfd) {
                        "/etc/vconsole.conf",
                        "/etc/hostname",
                        "/etc/machine-id",
-                       "/etc/kernel/cmdline") {
+                       "/etc/kernel/cmdline",
+                       "/etc/localtime") {
                 r = reset_one(rfd, p);
                 if (r < 0)
                         return r;
@@ -1238,11 +1255,13 @@ static int help(void) {
                "     --timezone=TIMEZONE          Set timezone\n"
                "     --hostname=NAME              Set hostname\n"
                "     --setup-machine-id           Set a random machine ID\n"
-               "     --machine-ID=ID              Set specified machine ID\n"
+               "     --machine-id=ID              Set specified machine ID\n"
                "     --root-password=PASSWORD     Set root password from plaintext password\n"
                "     --root-password-file=FILE    Set root password from file\n"
                "     --root-password-hashed=HASH  Set root password from hashed password\n"
                "     --root-shell=SHELL           Set root shell\n"
+               "     --kernel-command-line=CMDLINE\n"
+               "                                  Set kernel command line\n"
                "     --prompt-locale              Prompt the user for locale settings\n"
                "     --prompt-keymap              Prompt the user for keymap settings\n"
                "     --prompt-timezone            Prompt the user for timezone\n"
@@ -1691,6 +1710,8 @@ static int run(int argc, char *argv[]) {
         /* We check these conditions here instead of in parse_argv() so that we can take the root directory
          * into account. */
 
+        if (arg_keymap && !determine_keymap_validity_func(rfd)(arg_keymap))
+                return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Keymap %s is not installed.", arg_keymap);
         if (arg_locale && !locale_is_ok(rfd, arg_locale))
                 return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Locale %s is not installed.", arg_locale);
         if (arg_locale_messages && !locale_is_ok(rfd, arg_locale_messages))

@@ -2,6 +2,8 @@
 
 #include <linux/loop.h>
 
+#include "sd-messages.h"
+
 #include "bus-common-errors.h"
 #include "bus-error.h"
 #include "bus-locator.h"
@@ -1406,6 +1408,78 @@ static bool prefix_matches_compatible(char **matches, char **valid_prefixes) {
         return true;
 }
 
+static void log_portable_verb(
+                const char *verb,
+                const char *message_id,
+                const char *image_path,
+                OrderedHashmap *extension_images,
+                char **extension_image_paths,
+                PortableFlags flags) {
+
+        _cleanup_free_ char *root_base_name = NULL, *extensions_joined = NULL;
+        _cleanup_strv_free_ char **extension_base_names = NULL;
+        Image *ext;
+        int r;
+
+        assert(verb);
+        assert(message_id);
+        assert(image_path);
+        assert(!extension_images || !extension_image_paths);
+
+        /* Use the same structured metadata as it is attached to units via LogExtraFields=. The main image
+         * is logged as PORTABLE_ROOT= and extensions, if any, as individual PORTABLE_EXTENSION= fields. */
+
+        r = path_extract_filename(image_path, &root_base_name);
+        if (r < 0)
+                log_debug_errno(r, "Failed to extract basename from '%s', ignoring: %m", image_path);
+
+        ORDERED_HASHMAP_FOREACH(ext, extension_images) {
+                _cleanup_free_ char *extension_base_name = NULL;
+
+                r = path_extract_filename(ext->path, &extension_base_name);
+                if (r < 0) {
+                        log_debug_errno(r, "Failed to extract basename from '%s', ignoring: %m", ext->path);
+                        continue;
+                }
+
+                r = strv_extendf(&extension_base_names, "PORTABLE_EXTENSION=%s", extension_base_name);
+                if (r < 0)
+                        log_oom_debug();
+
+                if (!strextend_with_separator(&extensions_joined, ", ", ext->path))
+                        log_oom_debug();
+        }
+
+        STRV_FOREACH(e, extension_image_paths) {
+                _cleanup_free_ char *extension_base_name = NULL;
+
+                r = path_extract_filename(*e, &extension_base_name);
+                if (r < 0) {
+                        log_debug_errno(r, "Failed to extract basename from '%s', ignoring: %m", *e);
+                        continue;
+                }
+
+                r = strv_extendf(&extension_base_names, "PORTABLE_EXTENSION=%s", extension_base_name);
+                if (r < 0)
+                        log_oom_debug();
+
+                if (!strextend_with_separator(&extensions_joined, ", ", *e))
+                        log_oom_debug();
+        }
+
+        LOG_CONTEXT_PUSH_STRV(extension_base_names);
+
+        log_struct(LOG_INFO,
+                   LOG_MESSAGE("Successfully %s%s '%s%s%s'",
+                               verb,
+                               FLAGS_SET(flags, PORTABLE_RUNTIME) ? " ephemeral" : "",
+                               image_path,
+                               isempty(extensions_joined) ? "" : "' and its extension(s) '",
+                               strempty(extensions_joined)),
+                   message_id,
+                   "PORTABLE_ROOT=%s", strna(root_base_name));
+}
+
 int portable_attach(
                 sd_bus *bus,
                 const char *name_or_path,
@@ -1514,12 +1588,19 @@ int portable_attach(
          * operation otherwise. */
         (void) install_image_and_extensions_symlinks(image, extension_images, flags, changes, n_changes);
 
+        log_portable_verb(
+                        "attached",
+                        "MESSAGE_ID=" SD_MESSAGE_PORTABLE_ATTACHED_STR,
+                        image->path,
+                        extension_images,
+                        /* extension_image_paths= */ NULL,
+                        flags);
+
         return 0;
 }
 
-static bool marker_matches_images(const char *marker, const char *name_or_path, char **extension_image_paths) {
+static bool marker_matches_images(const char *marker, const char *name_or_path, char **extension_image_paths, bool match_all) {
         _cleanup_strv_free_ char **root_and_extensions = NULL;
-        const char *a;
         int r;
 
         assert(marker);
@@ -1529,7 +1610,9 @@ static bool marker_matches_images(const char *marker, const char *name_or_path, 
          * list of images/paths. We enforce strict 1:1 matching, so that we are sure
          * we are detaching exactly what was attached.
          * For each image, starting with the root, we look for a token in the marker,
-         * and return a negative answer on any non-matching combination. */
+         * and return a negative answer on any non-matching combination.
+         * If a partial match is allowed, then return immediately once it is found, otherwise
+         * ensure that everything matches. */
 
         root_and_extensions = strv_new(name_or_path);
         if (!root_and_extensions)
@@ -1539,70 +1622,33 @@ static bool marker_matches_images(const char *marker, const char *name_or_path, 
         if (r < 0)
                 return r;
 
-        STRV_FOREACH(image_name_or_path, root_and_extensions) {
-                _cleanup_free_ char *image = NULL;
+        /* Ensure the number of images passed matches the number of images listed in the marker */
+        while (!isempty(marker))
+                STRV_FOREACH(image_name_or_path, root_and_extensions) {
+                        _cleanup_free_ char *image = NULL, *base_image = NULL, *base_image_name_or_path = NULL;
 
-                r = extract_first_word(&marker, &image, ":", EXTRACT_UNQUOTE|EXTRACT_RETAIN_ESCAPE);
-                if (r < 0)
-                        return log_debug_errno(r, "Failed to parse marker: %s", marker);
-                if (r == 0)
-                        return false;
-
-                a = last_path_component(image);
-
-                if (image_name_is_valid(*image_name_or_path)) {
-                        const char *e, *underscore;
-
-                        /* We shall match against an image name. In that case let's compare the last component, and optionally
-                        * allow either a suffix of ".raw" or a series of "/".
-                        * But allow matching on a different version of the same image, when a "_" is used as a separator. */
-                        underscore = strchr(*image_name_or_path, '_');
-                        if (underscore) {
-                                if (strneq(a, *image_name_or_path, underscore - *image_name_or_path))
-                                        continue;
-                                return false;
-                        }
-
-                        e = startswith(a, *image_name_or_path);
-                        if (!e)
+                        r = extract_first_word(&marker, &image, ":", EXTRACT_UNQUOTE|EXTRACT_RETAIN_ESCAPE);
+                        if (r < 0)
+                                return log_debug_errno(r, "Failed to parse marker: %s", marker);
+                        if (r == 0)
                                 return false;
 
-                        if(!(e[strspn(e, "/")] == 0 || streq(e, ".raw")))
-                                return false;
-                } else {
-                        const char *b, *underscore;
-                        size_t l;
+                        r = path_extract_image_name(image, &base_image);
+                        if (r < 0)
+                                return log_debug_errno(r, "Failed to extract image name from %s, ignoring: %m", image);
 
-                        /* We shall match against a path. Let's ignore any prefix here though, as often there are many ways to
-                         * reach the same file. However, in this mode, let's validate any file suffix.
-                         * But also ensure that we don't fail if both components don't have a '/' at all
-                         * (strcspn returns the full length of the string in that case, which might not
-                         * match as the versions might differ). */
+                        r = path_extract_image_name(*image_name_or_path, &base_image_name_or_path);
+                        if (r < 0)
+                                return log_debug_errno(r, "Failed to extract image name from %s, ignoring: %m", *image_name_or_path);
 
-                        l = strcspn(a, "/");
-                        b = last_path_component(*image_name_or_path);
-
-                        if ((a[l] != '/') != !strchr(b, '/')) /* One is a directory, the other is not */
-                                return false;
-
-                        if (a[l] != 0 && strcspn(b, "/") != l)
-                                return false;
-
-                        underscore = strchr(b, '_');
-                        if (underscore)
-                                l = underscore - b;
-                        else { /* Either component could be versioned */
-                                underscore = strchr(a, '_');
-                                if (underscore)
-                                        l = underscore - a;
-                        }
-
-                        if (!strneq(a, b, l))
-                                return false;
+                        if (!streq(base_image, base_image_name_or_path)) {
+                                if (match_all)
+                                        return false;
+                        } else if (!match_all)
+                                return true;
                 }
-        }
 
-        return true;
+        return match_all;
 }
 
 static int test_chroot_dropin(
@@ -1657,7 +1703,9 @@ static int test_chroot_dropin(
         if (!name_or_path)
                 r = true;
         else
-                r = marker_matches_images(marker, name_or_path, extension_image_paths);
+                /* When detaching we want to match exactly on all images, but when inspecting we only need
+                 * to get the state of one component */
+                r = marker_matches_images(marker, name_or_path, extension_image_paths, ret_marker != NULL);
 
         if (ret_marker)
                 *ret_marker = TAKE_PTR(marker);
@@ -1836,6 +1884,14 @@ int portable_detach(
         /* Try to remove the unit file directory, if we can */
         if (rmdir(where) >= 0)
                 portable_changes_add(changes, n_changes, PORTABLE_UNLINK, where, NULL);
+
+        log_portable_verb(
+                        "detached",
+                        "MESSAGE_ID=" SD_MESSAGE_PORTABLE_DETACHED_STR,
+                        name_or_path,
+                        /* extension_images= */ NULL,
+                        extension_image_paths,
+                        flags);
 
         return ret;
 

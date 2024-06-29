@@ -424,8 +424,13 @@ _public_ int sd_device_new_from_subsystem_sysname(
         int r;
 
         assert_return(ret, -EINVAL);
-        assert_return(path_is_normalized(subsystem), -EINVAL);
-        assert_return(path_is_normalized(sysname), -EINVAL);
+        assert_return(subsystem, -EINVAL);
+        assert_return(sysname, -EINVAL);
+
+        if (!path_is_normalized(subsystem))
+                return -EINVAL;
+        if (!path_is_normalized(sysname))
+                return -EINVAL;
 
         /* translate sysname back to sysfs filename */
         name = strdupa_safe(sysname);
@@ -2434,7 +2439,7 @@ int device_get_sysattr_int(sd_device *device, const char *sysattr, int *ret_valu
         return v > 0;
 }
 
-int device_get_sysattr_unsigned(sd_device *device, const char *sysattr, unsigned *ret_value) {
+int device_get_sysattr_unsigned_full(sd_device *device, const char *sysattr, unsigned base, unsigned *ret_value) {
         const char *value;
         int r;
 
@@ -2443,7 +2448,7 @@ int device_get_sysattr_unsigned(sd_device *device, const char *sysattr, unsigned
                 return r;
 
         unsigned v;
-        r = safe_atou(value, &v);
+        r = safe_atou_full(value, base, &v);
         if (r < 0)
                 return log_device_debug_errno(device, r, "Failed to parse '%s' attribute: %m", sysattr);
 

@@ -1317,24 +1317,24 @@ static int monitor(int argc, char **argv, int (*dump)(sd_bus_message *m, FILE *f
                 if (r < 0)
                         return log_error_errno(r, "Failed to process bus: %m");
 
-                if (!is_monitor) {
-                        const char *name;
-
-                        /* wait until we lose our unique name */
-                        if (sd_bus_message_is_signal(m, "org.freedesktop.DBus", "NameLost") <= 0)
-                                continue;
-
-                        r = sd_bus_message_read(m, "s", &name);
-                        if (r < 0)
-                                return bus_log_parse_error(r);
-
-                        if (streq(name, unique_name))
-                                is_monitor = true;
-
-                        continue;
-                }
-
                 if (m) {
+                        if (!is_monitor) {
+                                const char *name;
+
+                                /* wait until we lose our unique name */
+                                if (sd_bus_message_is_signal(m, "org.freedesktop.DBus", "NameLost") <= 0)
+                                        continue;
+
+                                r = sd_bus_message_read(m, "s", &name);
+                                if (r < 0)
+                                        return bus_log_parse_error(r);
+
+                                if (streq(name, unique_name))
+                                        is_monitor = true;
+
+                                continue;
+                        }
+
                         dump(m, stdout);
                         fflush(stdout);
 
@@ -2016,6 +2016,15 @@ static int call(int argc, char **argv, void *userdata) {
         r = acquire_bus(false, &bus);
         if (r < 0)
                 return r;
+
+        if (!service_name_is_valid(argv[1]))
+                return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Invalid service name: %s", argv[1]);
+        if (!object_path_is_valid(argv[2]))
+                return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Invalid object path: %s", argv[2]);
+        if (!interface_name_is_valid(argv[3]))
+                return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Invalid interface name: %s", argv[3]);
+        if (!member_name_is_valid(argv[4]))
+                return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Invalid member name: %s", argv[4]);
 
         r = sd_bus_message_new_method_call(bus, &m, argv[1], argv[2], argv[3], argv[4]);
         if (r < 0)

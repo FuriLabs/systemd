@@ -113,7 +113,8 @@ int sd_dhcp_server_configure_pool(
 }
 
 int sd_dhcp_server_is_running(sd_dhcp_server *server) {
-        assert_return(server, false);
+        if (!server)
+                return false;
 
         return !!server->receive_message;
 }
@@ -771,14 +772,16 @@ static int parse_request(uint8_t code, uint8_t len, const void *option, void *us
                 req->agent_info_option = (uint8_t*)option - 2;
 
                 break;
-        case SD_DHCP_OPTION_HOST_NAME:
-                r = dhcp_option_parse_string(option, len, &req->hostname);
-                if (r < 0) {
-                        log_debug_errno(r, "Failed to parse hostname, ignoring: %m");
-                        return 0;
-                }
+        case SD_DHCP_OPTION_HOST_NAME: {
+                _cleanup_free_ char *p = NULL;
 
+                r = dhcp_option_parse_hostname(option, len, &p);
+                if (r < 0)
+                        log_debug_errno(r, "Failed to parse hostname, ignoring: %m");
+                else
+                        free_and_replace(req->hostname, p);
                 break;
+        }
         }
 
         return 0;
@@ -1329,7 +1332,7 @@ static int server_receive_message(sd_event_source *s, int fd,
                 /* Preallocate the additional size for DHCP Relay Agent Information Option if needed */
                 buflen += relay_agent_information_length(server->agent_circuit_id, server->agent_remote_id) + 2;
 
-        message = malloc(buflen);
+        message = malloc0(buflen);
         if (!message)
                 return -ENOMEM;
 
