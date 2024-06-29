@@ -126,7 +126,7 @@
 
     <para>For the latter five mechanisms the source for the key material used for unlocking the volume is
     primarily configured in the third field of each <filename>/etc/crypttab</filename> line, but may also
-    configured in <filename>/etc/cryptsetup-keys.d/</filename> and
+    be configured in <filename>/etc/cryptsetup-keys.d/</filename> and
     <filename>/run/cryptsetup-keys.d/</filename> (see above) or in the LUKS2 JSON token header (in case of
     the latter three). Use the
     <citerefentry><refentrytitle>systemd-cryptenroll</refentrytitle><manvolnum>1</manvolnum></citerefentry>
@@ -804,7 +804,7 @@
     is acquired by connecting to the socket and reading the key from the connection. The connection is made
     from an <constant>AF_UNIX</constant> socket name in the abstract namespace, see <citerefentry
     project='man-pages'><refentrytitle>unix</refentrytitle><manvolnum>7</manvolnum></citerefentry> for
-    details. The source socket name is chosen according the following format:</para>
+    details. The source socket name is chosen according to the following format:</para>
 
     <programlisting><constant>NUL</constant> <replaceable>RANDOM</replaceable> /cryptsetup/ <replaceable>VOLUME</replaceable></programlisting>
 
@@ -855,7 +855,7 @@ external   /dev/sda3       keyfile:LABEL=keydev keyfile-timeout=10s,cipher=xchac
       <citerefentry><refentrytitle>systemd-cryptenroll</refentrytitle><manvolnum>1</manvolnum></citerefentry>
       to add it in the LUKS2 volume:</para>
 
-<programlisting><xi:include href="yubikey-crypttab.sh" parse="text" /></programlisting>
+      <programlisting><xi:include href="yubikey-crypttab.sh" parse="text" /></programlisting>
 
       <para>A few notes on the above:</para>
 
@@ -875,7 +875,7 @@ external   /dev/sda3       keyfile:LABEL=keydev keyfile-timeout=10s,cipher=xchac
       set up a FIDO2 security token for this purpose for a LUKS2 volume, using
       <citerefentry><refentrytitle>systemd-cryptenroll</refentrytitle><manvolnum>1</manvolnum></citerefentry>:</para>
 
-<programlisting><xi:include href="fido2-crypttab.sh" parse="text" /></programlisting>
+      <programlisting><xi:include href="fido2-crypttab.sh" parse="text" /></programlisting>
     </example>
 
     <example>
@@ -886,7 +886,7 @@ external   /dev/sda3       keyfile:LABEL=keydev keyfile-timeout=10s,cipher=xchac
       using
       <citerefentry><refentrytitle>systemd-cryptenroll</refentrytitle><manvolnum>1</manvolnum></citerefentry>:</para>
 
-<programlisting><xi:include href="tpm2-crypttab.sh" parse="text" /></programlisting>
+      <programlisting><xi:include href="tpm2-crypttab.sh" parse="text" /></programlisting>
     </example>
   </refsect1>
 

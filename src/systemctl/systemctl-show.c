@@ -666,7 +666,7 @@ static void print_status_info(
                         if (i->main_pid > 0)
                                 fputs("; Control PID: ", stdout);
                         else
-                                fputs("Cntrl PID: ", stdout); /* if first in column, abbreviated so it fits alignment */
+                                fputs("  Cntrl PID: ", stdout); /* if first in column, abbreviated so it fits alignment */
 
                         printf(PID_FMT, i->control_pid);
 
@@ -1959,6 +1959,7 @@ static int show_one(
                 bool *ellipsized) {
 
         static const struct bus_properties_map property_map[] = {
+                { "Id",                             "s",               NULL,           offsetof(UnitStatusInfo, id)                                },
                 { "LoadState",                      "s",               NULL,           offsetof(UnitStatusInfo, load_state)                        },
                 { "ActiveState",                    "s",               NULL,           offsetof(UnitStatusInfo, active_state)                      },
                 { "FreezerState",                   "s",               NULL,           offsetof(UnitStatusInfo, freezer_state)                     },
@@ -2209,7 +2210,7 @@ static int get_unit_dbus_path_by_pid(
          * sends the numeric PID. */
 
         pidfd = pidfd_open(pid, 0);
-        if (pidfd < 0 && ERRNO_IS_NOT_SUPPORTED(errno))
+        if (pidfd < 0 && (ERRNO_IS_NOT_SUPPORTED(errno) || ERRNO_IS_PRIVILEGE(errno)))
                 return get_unit_dbus_path_by_pid_fallback(bus, pid, ret_path, ret_unit);
         if (pidfd < 0)
                 return log_error_errno(errno, "Failed to open PID %"PRIu32": %m", pid);

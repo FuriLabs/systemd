@@ -138,6 +138,19 @@ grep -q -F "LogExtraFields=PORTABLE_EXTENSION_NAME_AND_VERSION=app" /run/systemd
 
 portablectl detach --now --runtime --extension /usr/share/app0.raw /usr/share/minimal_1.raw app0
 
+# Ensure versioned images are accepted without needing to use --force to override the extension-release
+# matching
+
+cp /usr/share/app0.raw /tmp/app0_1.0.raw
+portablectl "${ARGS[@]}" attach --now --runtime --extension /tmp/app0_1.0.raw /usr/share/minimal_0.raw app0
+
+systemctl is-active app0.service
+status="$(portablectl is-attached --extension app0_1 minimal_0)"
+[[ "${status}" == "running-runtime" ]]
+
+portablectl detach --now --runtime --extension /tmp/app0_1.0.raw /usr/share/minimal_1.raw app0
+rm -f /tmp/app0_1.0.raw
+
 portablectl "${ARGS[@]}" attach --now --runtime --extension /usr/share/app1.raw /usr/share/minimal_0.raw app1
 
 systemctl is-active app1.service
@@ -185,7 +198,11 @@ status="$(portablectl is-attached --extension /tmp/app10.raw /usr/share/minimal_
 
 portablectl inspect --force --cat --extension /tmp/app10.raw /usr/share/minimal_0.raw app0 | grep -q -F "Extension Release: /tmp/app10.raw"
 
-portablectl detach --force --now --runtime --extension /tmp/app10.raw /usr/share/minimal_0.raw app0
+# Ensure that we can detach even when an image has been deleted already (stop the unit manually as
+# portablectl won't find it)
+rm -f /tmp/app10.raw
+systemctl stop app0.service
+portablectl detach --force --runtime --extension /tmp/app10.raw /usr/share/minimal_0.raw app0
 
 # portablectl also works with directory paths rather than images
 

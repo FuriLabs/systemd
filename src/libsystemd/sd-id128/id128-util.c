@@ -12,6 +12,7 @@
 #include "stdio-util.h"
 #include "string-util.h"
 #include "sync-util.h"
+#include "virt.h"
 
 bool id128_is_valid(const char *s) {
         size_t l;
@@ -119,7 +120,7 @@ int id128_read_at(int dir_fd, const char *path, Id128Flag f, sd_id128_t *ret) {
         assert(dir_fd >= 0 || dir_fd == AT_FDCWD);
         assert(path);
 
-        fd = xopenat(dir_fd, path, O_RDONLY|O_CLOEXEC|O_NOCTTY, /* xopen_flags = */ 0, /* mode = */ 0);
+        fd = xopenat(dir_fd, path, O_RDONLY|O_CLOEXEC|O_NOCTTY);
         if (fd < 0)
                 return fd;
 
@@ -165,7 +166,7 @@ int id128_write_at(int dir_fd, const char *path, Id128Flag f, sd_id128_t id) {
         assert(dir_fd >= 0 || dir_fd == AT_FDCWD);
         assert(path);
 
-        fd = xopenat(dir_fd, path, O_WRONLY|O_CREAT|O_CLOEXEC|O_NOCTTY|O_TRUNC, /* xopen_flags = */ 0, 0444);
+        fd = xopenat_full(dir_fd, path, O_WRONLY|O_CREAT|O_CLOEXEC|O_NOCTTY|O_TRUNC, /* xopen_flags = */ 0, 0444);
         if (fd < 0)
                 return fd;
 
@@ -205,9 +206,18 @@ int id128_get_product(sd_id128_t *ret) {
         /* Reads the systems product UUID from DMI or devicetree (where it is located on POWER). This is
          * particularly relevant in VM environments, where VM managers typically place a VM uuid there. */
 
+        r = detect_container();
+        if (r < 0)
+                return r;
+        if (r > 0) /* Refuse returning this in containers, as this is not a property of our system then, but
+                    * of the host */
+                return -ENOENT;
+
         r = id128_read("/sys/class/dmi/id/product_uuid", ID128_FORMAT_UUID, &uuid);
         if (r == -ENOENT)
                 r = id128_read("/proc/device-tree/vm,uuid", ID128_FORMAT_UUID, &uuid);
+        if (r == -ENOENT)
+                r = id128_read("/sys/hypervisor/uuid", ID128_FORMAT_UUID, &uuid);
         if (r < 0)
                 return r;
 

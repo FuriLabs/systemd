@@ -108,7 +108,10 @@ static int attach_extensions_to_message(sd_bus_message *m, const char *method, c
         STRV_FOREACH(p, extensions) {
                 _cleanup_free_ char *resolved_extension_image = NULL;
 
-                r = determine_image(*p, false, &resolved_extension_image);
+                r = determine_image(
+                                *p,
+                                startswith_strv(method, STRV_MAKE("Get", "Detach")),
+                                &resolved_extension_image);
                 if (r < 0)
                         return r;
 
@@ -1153,7 +1156,7 @@ static int is_image_attached(int argc, char *argv[], void *userdata) {
                 return r;
 
         if (!strv_isempty(arg_extension_images)) {
-                r = sd_bus_message_append(m, "t", 0);
+                r = sd_bus_message_append(m, "t", UINT64_C(0));
                 if (r < 0)
                         return bus_log_create_error(r);
         }

@@ -1109,7 +1109,7 @@ static void server_dispatch_message_real(
                 IOVEC_ADD_STRING_FIELD(iovec, n, o->slice, "OBJECT_SYSTEMD_SLICE");
                 IOVEC_ADD_STRING_FIELD(iovec, n, o->user_slice, "OBJECT_SYSTEMD_USER_SLICE");
 
-                IOVEC_ADD_ID128_FIELD(iovec, n, o->invocation_id, "OBJECT_SYSTEMD_INVOCATION_ID=");
+                IOVEC_ADD_ID128_FIELD(iovec, n, o->invocation_id, "OBJECT_SYSTEMD_INVOCATION_ID");
         }
 
         assert(n <= m);
@@ -1871,6 +1871,12 @@ int server_schedule_sync(Server *s, int priority) {
 
         if (priority <= LOG_CRIT) {
                 /* Immediately sync to disk when this is of priority CRIT, ALERT, EMERG */
+                server_sync(s);
+                return 0;
+        }
+
+        if (!s->event || sd_event_get_state(s->event) == SD_EVENT_FINISHED) {
+                /* Shutting down the server? Let's sync immediately. */
                 server_sync(s);
                 return 0;
         }

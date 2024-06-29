@@ -56,6 +56,7 @@
 #include "pcre2-util.h"
 #include "percent-util.h"
 #include "process-util.h"
+#include "reboot-util.h"
 #if HAVE_SECCOMP
 #include "seccomp-util.h"
 #endif
@@ -357,6 +358,40 @@ int config_parse_unit_string_printf(
         r = unit_full_printf(u, rvalue, &k);
         if (r < 0) {
                 log_syntax(unit, LOG_WARNING, filename, line, r, "Failed to resolve unit specifiers in '%s', ignoring: %m", rvalue);
+                return 0;
+        }
+
+        return config_parse_string(unit, filename, line, section, section_line, lvalue, ltype, k, data, userdata);
+}
+
+int config_parse_reboot_parameter(
+                const char *unit,
+                const char *filename,
+                unsigned line,
+                const char *section,
+                unsigned section_line,
+                const char *lvalue,
+                int ltype,
+                const char *rvalue,
+                void *data,
+                void *userdata) {
+
+        _cleanup_free_ char *k = NULL;
+        const Unit *u = ASSERT_PTR(userdata);
+        int r;
+
+        assert(filename);
+        assert(line);
+        assert(rvalue);
+
+        r = unit_full_printf(u, rvalue, &k);
+        if (r < 0) {
+                log_syntax(unit, LOG_WARNING, filename, line, r, "Failed to resolve unit specifiers in '%s', ignoring: %m", rvalue);
+                return 0;
+        }
+
+        if (!reboot_parameter_is_valid(k)) {
+                log_syntax(unit, LOG_WARNING, filename, line, 0, "Invalid reboot parameter '%s', ignoring.", k);
                 return 0;
         }
 
@@ -3802,8 +3837,23 @@ int config_parse_allowed_cpuset(
                 void *userdata) {
 
         CPUSet *c = data;
+        const Unit *u = userdata;
+        _cleanup_free_ char *k = NULL;
+        int r;
 
-        (void) parse_cpu_set_extend(rvalue, c, true, unit, filename, line, lvalue);
+        assert(filename);
+        assert(lvalue);
+        assert(rvalue);
+
+        r = unit_full_printf(u, rvalue, &k);
+        if (r < 0) {
+                log_syntax(unit, LOG_WARNING, filename, line, r,
+                           "Failed to resolve unit specifiers in '%s', ignoring: %m",
+                           rvalue);
+                return 0;
+        }
+
+        (void) parse_cpu_set_extend(k, c, true, unit, filename, line, lvalue);
         return 0;
 }
 
@@ -4021,7 +4071,7 @@ int config_parse_delegate(
 
         } else if (r > 0) {
                 c->delegate = true;
-                c->delegate_controllers = _CGROUP_MASK_ALL;
+                c->delegate_controllers = CGROUP_MASK_DELEGATE;
         } else {
                 c->delegate = false;
                 c->delegate_controllers = 0;

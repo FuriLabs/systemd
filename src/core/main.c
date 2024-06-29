@@ -662,7 +662,7 @@ static int parse_config_file(void) {
                 { "Manager", "CPUAffinity",                  config_parse_cpu_affinity2,         0,                        &arg_cpu_affinity                 },
                 { "Manager", "NUMAPolicy",                   config_parse_numa_policy,           0,                        &arg_numa_policy.type             },
                 { "Manager", "NUMAMask",                     config_parse_numa_mask,             0,                        &arg_numa_policy                  },
-                { "Manager", "JoinControllers",              config_parse_warn_compat,           DISABLED_CONFIGURATION,   NULL                              },
+                { "Manager", "JoinControllers",              config_parse_warn_compat,           DISABLED_LEGACY,          NULL                              },
                 { "Manager", "RuntimeWatchdogSec",           config_parse_watchdog_sec,          0,                        &arg_runtime_watchdog             },
                 { "Manager", "RuntimeWatchdogPreSec",        config_parse_watchdog_sec,          0,                        &arg_pretimeout_watchdog          },
                 { "Manager", "RebootWatchdogSec",            config_parse_watchdog_sec,          0,                        &arg_reboot_watchdog              },
@@ -2530,7 +2530,7 @@ static void setenv_manager_environment(void) {
 
                 r = putenv_dup(*p, true);
                 if (r < 0)
-                        log_warning_errno(errno, "Failed to setenv \"%s\", ignoring: %m", *p);
+                        log_warning_errno(r, "Failed to setenv \"%s\", ignoring: %m", *p);
         }
 }
 
@@ -2794,8 +2794,6 @@ static int collect_fds(FDSet **ret_fds, const char **ret_error_message) {
                 *ret_error_message = "Failed to allocate fd set";
                 return log_emergency_errno(r, "Failed to allocate fd set: %m");
         }
-
-        (void) fdset_cloexec(*ret_fds, true);
 
         /* The serialization fd should have O_CLOEXEC turned on already, let's verify that we didn't pick it up here */
         assert_se(!arg_serialization || !fdset_contains(*ret_fds, fileno(arg_serialization)));

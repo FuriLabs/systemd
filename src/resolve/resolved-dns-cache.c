@@ -531,6 +531,20 @@ static int dns_cache_put_positive(
         TAKE_PTR(i);
         return 0;
 }
+/* https://www.iana.org/assignments/special-use-domain-names/special-use-domain-names.xhtml */
+/* https://www.iana.org/assignments/locally-served-dns-zones/locally-served-dns-zones.xhtml#transport-independent */
+static bool dns_special_use_domain_invalid_answer(DnsResourceKey *key, int rcode) {
+        /* Sometimes we know a domain exists, even if broken nameservers say otherwise. Make sure not to
+         * cache any answers we know are wrong. */
+
+        /* RFC9462 § 6.4: resolvers SHOULD respond to queries of any type other than SVCB for
+         * _dns.resolver.arpa. with NODATA and queries of any type for any domain name under resolver.arpa
+         * with NODATA. */
+        if (dns_name_endswith(dns_resource_key_name(key), "resolver.arpa") > 0 && rcode == DNS_RCODE_NXDOMAIN)
+                return true;
+
+        return false;
+}
 
 static int dns_cache_put_negative(
                 DnsCache *c,
@@ -560,6 +574,8 @@ static int dns_cache_put_negative(
         if (dns_class_is_pseudo(key->class))
                 return 0;
         if (dns_type_is_pseudo(key->type))
+                return 0;
+        if (dns_special_use_domain_invalid_answer(key, rcode))
                 return 0;
 
         if (IN_SET(rcode, DNS_RCODE_SUCCESS, DNS_RCODE_NXDOMAIN)) {
@@ -1303,10 +1319,27 @@ int dns_cache_export_shared_to_packet(DnsCache *cache, DnsPacket *p, usec_t ts, 
                         if (!j->shared_owner)
                                 continue;
 
+                        /* Ignore cached goodby packet. See on_mdns_packet() and RFC 6762 section 10.1. */
+                        if (j->rr->ttl <= 1)
+                                continue;
+
                         /* RFC6762 7.1: Don't append records with less than half the TTL remaining
                          * as known answers. */
                         if (usec_sub_unsigned(j->until, ts) < j->rr->ttl * USEC_PER_SEC / 2)
                                 continue;
+
+                        if (max_rr > 0 && ancount >= max_rr) {
+                                DNS_PACKET_HEADER(p)->ancount = htobe16(ancount);
+                                ancount = 0;
+
+                                r = dns_packet_new_query(&p->more, p->protocol, 0, true);
+                                if (r < 0)
+                                        return r;
+
+                                p = p->more;
+
+                                max_rr = UINT_MAX;
+                        }
 
                         r = dns_packet_append_rr(p, j->rr, 0, NULL, NULL);
                         if (r == -EMSGSIZE) {
@@ -1333,18 +1366,6 @@ int dns_cache_export_shared_to_packet(DnsCache *cache, DnsPacket *p, usec_t ts, 
                                 return r;
 
                         ancount++;
-                        if (max_rr > 0 && ancount >= max_rr) {
-                                DNS_PACKET_HEADER(p)->ancount = htobe16(ancount);
-                                ancount = 0;
-
-                                r = dns_packet_new_query(&p->more, p->protocol, 0, true);
-                                if (r < 0)
-                                        return r;
-
-                                p = p->more;
-
-                                max_rr = UINT_MAX;
-                        }
                 }
 
 finalize:

@@ -245,6 +245,7 @@ conf.set_quoted('DOCUMENT_ROOT',                              pkgdatadir / 'gate
 conf.set_quoted('ENVIRONMENT_DIR',                            environmentdir)
 conf.set_quoted('INCLUDE_DIR',                                includedir)
 conf.set_quoted('LIBDIR',                                     libdir)
+conf.set_quoted('KERNEL_INSTALL_DIR',                         kernelinstalldir)
 conf.set_quoted('MODPROBE_DIR',                               modprobedir)
 conf.set_quoted('MODULESLOAD_DIR',                            modulesloaddir)
 conf.set_quoted('PKGSYSCONFDIR',                              pkgsysconfdir)
@@ -316,7 +317,7 @@ conf.set('DEFAULT_TIMEOUT_SEC',                               get_option('defaul
 conf.set('DEFAULT_USER_TIMEOUT_SEC',                          get_option('default-user-timeout-sec'))
 conf.set('UPDATE_HELPER_USER_TIMEOUT_SEC',                    get_option('update-helper-user-timeout-sec'))
 
-conf.set10('FIRST_BOOT_FULL_PRESET',                          get_option('first-boot-full-preset'))
+conf.set10('ENABLE_FIRST_BOOT_FULL_PRESET',                   get_option('first-boot-full-preset'))
 
 #####################################################################
 
@@ -328,7 +329,7 @@ meson_build_sh = find_program('tools/meson-build.sh')
 want_tests = get_option('tests')
 slow_tests = want_tests != 'false' and get_option('slow-tests')
 fuzz_tests = want_tests != 'false' and get_option('fuzz-tests')
-install_tests = get_option('install-tests')
+install_tests = want_tests != 'false' and get_option('install-tests')
 
 if add_languages('cpp', native : false, required : fuzzer_build)
         #  Used only for tests
@@ -356,6 +357,7 @@ endif
 basic_disabled_warnings = [
         '-Wno-missing-field-initializers',
         '-Wno-unused-parameter',
+        '-Wno-nonnull-compare',
 ]
 
 possible_common_cc_flags = [
@@ -2019,13 +2021,31 @@ if conf.get('BPF_FRAMEWORK') == 1
         bpf_gcc_flags = [
                 '-std=gnu11',
                 '-fno-stack-protector',
+                '-fno-ssa-phiopt',
                 '-O2',
-                '-mkernel=5.2',
                 '-mcpu=v3',
                 '-mco-re',
                 '-gbtf',
                 '-c',
         ]
+
+        # If c_args contains these flags copy them along with the values, in order to avoid breaking
+        # reproducible builds and other functionality
+        propagate_cflags = [
+                '-ffile-prefix-map=',
+                '-fdebug-prefix-map=',
+                '-fmacro-prefix-map=',
+        ]
+
+        foreach opt : c_args
+                foreach flag : propagate_cflags
+                        if opt.startswith(flag)
+                                bpf_clang_flags += [opt]
+                                bpf_gcc_flags += [opt]
+                                break
+                        endif
+                endforeach
+        endforeach
 
         # Generate defines that are appropriate to tell the compiler what architecture
         # we're compiling for. By default we just map meson's cpu_family to __<cpu_family>__.
@@ -2039,6 +2059,7 @@ if conf.get('BPF_FRAMEWORK') == 1
                 'riscv32' : ['-D__riscv', '-D__riscv_xlen=32'],
                 'riscv64' : ['-D__riscv', '-D__riscv_xlen=64'],
                 'x86'     : ['-D__i386__'],
+                's390x'   : ['-D__s390__', '-D__s390x__'],
 
                 # For arm, assume hardware fp is available.
                 'arm'     : ['-D__arm__', '-D__ARM_PCS_VFP'],
@@ -2069,7 +2090,7 @@ if conf.get('BPF_FRAMEWORK') == 1
 
         bpf_o_unstripped_cmd += ['-I.']
 
-        if not meson.is_cross_build() and bpf_compiler == 'clang'
+        if not meson.is_cross_build()
                 target_triplet_cmd = run_command('gcc', '-dumpmachine', check: false)
                 if target_triplet_cmd.returncode() == 0
                         target_triplet = target_triplet_cmd.stdout().strip()

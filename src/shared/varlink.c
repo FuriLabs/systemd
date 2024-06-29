@@ -882,12 +882,25 @@ static int varlink_dispatch_disconnect(Varlink *v) {
 }
 
 static int varlink_sanitize_parameters(JsonVariant **v) {
+        int r;
+
         assert(v);
 
         /* Varlink always wants a parameters list, hence make one if the caller doesn't want any */
         if (!*v)
                 return json_variant_new_object(v, NULL, 0);
-        else if (!json_variant_is_object(*v))
+        if (json_variant_is_null(*v)) {
+                JsonVariant *empty;
+
+                r = json_variant_new_object(&empty, NULL, 0);
+                if (r < 0)
+                        return r;
+
+                json_variant_unref(*v);
+                *v = empty;
+                return 0;
+        }
+        if (!json_variant_is_object(*v))
                 return -EINVAL;
 
         return 0;
@@ -927,7 +940,7 @@ static int varlink_dispatch_reply(Varlink *v) {
                 } else if (streq(k, "parameters")) {
                         if (parameters)
                                 goto invalid;
-                        if (!json_variant_is_object(e))
+                        if (!json_variant_is_object(e) && !json_variant_is_null(e))
                                 goto invalid;
 
                         parameters = json_variant_ref(e);
@@ -1026,7 +1039,7 @@ static int varlink_dispatch_method(Varlink *v) {
                 } else if (streq(k, "parameters")) {
                         if (parameters)
                                 goto invalid;
-                        if (!json_variant_is_object(e))
+                        if (!json_variant_is_object(e) && !json_variant_is_null(e))
                                 goto invalid;
 
                         parameters = json_variant_ref(e);
@@ -2394,6 +2407,16 @@ int varlink_take_fd(Varlink *v, size_t i) {
 static int verify_unix_socket(Varlink *v) {
         assert(v);
 
+        /* Returns:
+         *    • 0 if this is an AF_UNIX socket
+         *    • -ENOTSOCK if this is not a socket at all
+         *    • -ENOMEDIUM if this is a socket, but not an AF_UNIX socket
+         *
+         * Reminder:
+         *    • v->af is < 0 if we haven't checked what kind of address family the thing is yet.
+         *    • v->af == AF_UNSPEC if we checked but it's not a socket
+         *    • otherwise: v->af contains the address family we determined */
+
         if (v->af < 0) {
                 struct stat st;
 
@@ -2409,7 +2432,8 @@ static int verify_unix_socket(Varlink *v) {
                         return v->af;
         }
 
-        return v->af == AF_UNIX ? 0 : -ENOMEDIUM;
+        return v->af == AF_UNIX ? 0 :
+                v->af == AF_UNSPEC ? -ENOTSOCK : -ENOMEDIUM;
 }
 
 int varlink_set_allow_fd_passing_input(Varlink *v, bool b) {

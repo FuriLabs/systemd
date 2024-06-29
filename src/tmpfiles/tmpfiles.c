@@ -803,9 +803,9 @@ static int dir_cleanup(
                                            cutoff_nsec, sub_path, age_by_file, false))
                                 continue;
 
-                        fd = xopenat(dirfd(d),
+                        fd = xopenat_full(dirfd(d),
                                      de->d_name,
-                                     O_RDONLY|O_CLOEXEC|O_NOFOLLOW|O_NOATIME,
+                                     O_RDONLY|O_CLOEXEC|O_NOFOLLOW|O_NOATIME|O_NONBLOCK,
                                      /* xopen_flags = */ 0,
                                      /* mode = */ 0);
                         if (fd < 0 && !IN_SET(fd, -ENOENT, -ELOOP))
@@ -1139,7 +1139,7 @@ static int parse_acls_from_arg(Item *item) {
         r = parse_acl(item->argument, &item->acl_access, &item->acl_access_exec,
                       &item->acl_default, !item->append_or_force);
         if (r < 0)
-                log_full_errno(arg_graceful && IN_SET(r, -ENOENT, -ESRCH) ? LOG_DEBUG : LOG_WARNING,
+                log_full_errno(arg_graceful && IN_SET(r, -EINVAL, -ENOENT, -ESRCH) ? LOG_DEBUG : LOG_WARNING,
                                r, "Failed to parse ACL \"%s\", ignoring: %m", item->argument);
 #else
         log_warning("ACLs are not supported, ignoring.");
@@ -1151,80 +1151,46 @@ static int parse_acls_from_arg(Item *item) {
 #if HAVE_ACL
 static int parse_acl_cond_exec(
                 const char *path,
-                acl_t access, /* could be empty (NULL) */
-                acl_t cond_exec,
                 const struct stat *st,
+                acl_t cond_exec,
+                acl_t access, /* could be empty (NULL) */
                 bool append,
                 acl_t *ret) {
 
-        _cleanup_(acl_freep) acl_t parsed = NULL;
         acl_entry_t entry;
         acl_permset_t permset;
         bool has_exec;
         int r;
 
         assert(path);
-        assert(ret);
         assert(st);
+        assert(cond_exec);
+        assert(ret);
 
-        parsed = access ? acl_dup(access) : acl_init(0);
-        if (!parsed)
-                return -errno;
-
-        /* Since we substitute 'X' with 'x' in parse_acl(), we just need to copy the entries over
-         * for directories */
-        if (S_ISDIR(st->st_mode)) {
-                for (r = acl_get_entry(cond_exec, ACL_FIRST_ENTRY, &entry);
-                     r > 0;
-                     r = acl_get_entry(cond_exec, ACL_NEXT_ENTRY, &entry)) {
-
-                        acl_entry_t parsed_entry;
-
-                        if (acl_create_entry(&parsed, &parsed_entry) < 0)
-                                return -errno;
-
-                        if (acl_copy_entry(parsed_entry, entry) < 0)
-                                return -errno;
-                }
-                if (r < 0)
-                        return -errno;
-
-                goto finish;
-        }
-
-        has_exec = st->st_mode & S_IXUSR;
-
-        if (!has_exec && append) {
+        if (!S_ISDIR(st->st_mode)) {
                 _cleanup_(acl_freep) acl_t old = NULL;
 
                 old = acl_get_file(path, ACL_TYPE_ACCESS);
                 if (!old)
                         return -errno;
 
+                has_exec = false;
+
                 for (r = acl_get_entry(old, ACL_FIRST_ENTRY, &entry);
                      r > 0;
                      r = acl_get_entry(old, ACL_NEXT_ENTRY, &entry)) {
 
-                        if (acl_get_permset(entry, &permset) < 0)
+                        acl_tag_t tag;
+
+                        if (acl_get_tag_type(entry, &tag) < 0)
                                 return -errno;
 
-                        r = acl_get_perm(permset, ACL_EXECUTE);
-                        if (r < 0)
-                                return -errno;
-                        if (r > 0) {
-                                has_exec = true;
-                                break;
-                        }
-                }
-                if (r < 0)
-                        return -errno;
-        }
+                        if (tag == ACL_MASK)
+                                continue;
 
-        /* Check if we're about to set the execute bit in acl_access */
-        if (!has_exec && access) {
-                for (r = acl_get_entry(access, ACL_FIRST_ENTRY, &entry);
-                     r > 0;
-                     r = acl_get_entry(access, ACL_NEXT_ENTRY, &entry)) {
+                        /* If not appending, skip ACL definitions */
+                        if (!append && IN_SET(tag, ACL_USER, ACL_GROUP))
+                                continue;
 
                         if (acl_get_permset(entry, &permset) < 0)
                                 return -errno;
@@ -1239,7 +1205,33 @@ static int parse_acl_cond_exec(
                 }
                 if (r < 0)
                         return -errno;
-        }
+
+                /* Check if we're about to set the execute bit in acl_access */
+                if (!has_exec && access) {
+                        for (r = acl_get_entry(access, ACL_FIRST_ENTRY, &entry);
+                             r > 0;
+                             r = acl_get_entry(access, ACL_NEXT_ENTRY, &entry)) {
+
+                                if (acl_get_permset(entry, &permset) < 0)
+                                        return -errno;
+
+                                r = acl_get_perm(permset, ACL_EXECUTE);
+                                if (r < 0)
+                                        return -errno;
+                                if (r > 0) {
+                                        has_exec = true;
+                                        break;
+                                }
+                        }
+                        if (r < 0)
+                                return -errno;
+                }
+        } else
+                has_exec = true;
+
+        _cleanup_(acl_freep) acl_t parsed = access ? acl_dup(access) : acl_init(0);
+        if (!parsed)
+                return -errno;
 
         for (r = acl_get_entry(cond_exec, ACL_FIRST_ENTRY, &entry);
              r > 0;
@@ -1253,6 +1245,7 @@ static int parse_acl_cond_exec(
                 if (acl_copy_entry(parsed_entry, entry) < 0)
                         return -errno;
 
+                /* We substituted 'X' with 'x' in parse_acl(), so drop execute bit here if not applicable. */
                 if (!has_exec) {
                         if (acl_get_permset(parsed_entry, &permset) < 0)
                                 return -errno;
@@ -1264,7 +1257,6 @@ static int parse_acl_cond_exec(
         if (r < 0)
                 return -errno;
 
-finish:
         if (!append) { /* want_mask = true */
                 r = calc_acl_mask_if_needed(&parsed);
                 if (r < 0)
@@ -1364,10 +1356,9 @@ static int fd_set_acls(
         }
 
         if (item->acl_access_exec) {
-                r = parse_acl_cond_exec(FORMAT_PROC_FD_PATH(fd),
-                                        item->acl_access,
+                r = parse_acl_cond_exec(FORMAT_PROC_FD_PATH(fd), st,
                                         item->acl_access_exec,
-                                        st,
+                                        item->acl_access,
                                         item->append_or_force,
                                         &access_with_exec_parsed);
                 if (r < 0)
@@ -2298,7 +2289,7 @@ static int item_do(
                 fdaction_t action) {
 
         struct stat st;
-        int r = 0, q;
+        int r = 0, q = 0;
 
         assert(i);
         assert(path);
@@ -2332,9 +2323,10 @@ static int item_do(
                                 continue;
 
                         de_fd = openat(fd, de->d_name, O_NOFOLLOW|O_CLOEXEC|O_PATH);
-                        if (de_fd < 0)
-                                q = log_error_errno(errno, "Failed to open() file '%s': %m", de->d_name);
-                        else {
+                        if (de_fd < 0) {
+                                if (errno != ENOENT)
+                                        q = log_error_errno(errno, "Failed to open file '%s': %m", de->d_name);
+                        } else {
                                 _cleanup_free_ char *de_path = NULL;
 
                                 de_path = path_join(path, de->d_name);
@@ -4011,10 +4003,12 @@ static int parse_argv(int argc, char *argv[]) {
                         break;
 
                 case ARG_REPLACE:
-                        if (!path_is_absolute(optarg) ||
-                            !endswith(optarg, ".conf"))
+                        if (!path_is_absolute(optarg))
                                 return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
-                                                       "The argument to --replace= must an absolute path to a config file");
+                                                       "The argument to --replace= must be an absolute path.");
+                        if (!endswith(optarg, ".conf"))
+                                return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
+                                                       "The argument to --replace= must have the extension '.conf'.");
 
                         arg_replace = optarg;
                         break;

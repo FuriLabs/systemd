@@ -5,6 +5,7 @@
 #include <stdlib.h>
 
 #include "alloc-util.h"
+#include "bus-internal.h"
 #include "errno-util.h"
 #include "format-util.h"
 #include "macro.h"
@@ -39,7 +40,8 @@ int pam_syslog_pam_error(pam_handle_t *handle, int level, int error, const char 
                         pamerr = "n/a";  /* We cannot have any formatting chars */
 
                 char buf[p - format + strlen(pamerr) + 1];
-                xsprintf(buf, "%*s%s", (int)(p - format), format, pamerr);
+                xsprintf(buf, "%.*s%s", (int)(p - format), format, pamerr);
+
                 DISABLE_WARNING_FORMAT_NONLITERAL;
                 pam_vsyslog(handle, level, buf, ap);
                 REENABLE_WARNING;
@@ -87,8 +89,13 @@ static void pam_bus_data_destroy(pam_handle_t *handle, void *data, int error_sta
          * internally anyway. That said, we still generate a warning message, since this really shouldn't
          * happen. */
 
-        if (error_status & PAM_DATA_SILENT)
-                pam_syslog(handle, LOG_DEBUG, "Attempted to close sd-bus after fork, this should not happen.");
+        if (!data)
+                return;
+
+        PamBusData *d = data;
+        if (FLAGS_SET(error_status, PAM_DATA_SILENT) &&
+            d->bus && bus_origin_changed(d->bus))
+                pam_syslog(handle, LOG_DEBUG, "Attempted to close sd-bus after fork whose connection is opened before the fork, this should not happen.");
 
         pam_bus_data_free(data);
 }

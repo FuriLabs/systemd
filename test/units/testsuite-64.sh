@@ -396,6 +396,11 @@ EOF
 
     udevadm control --reload
 
+    # initialize partition table
+    for disk in {0..9}; do
+        echo 'label: gpt' | udevadm lock --device="${devices[$disk]}" sfdisk -q "${devices[$disk]}"
+    done
+
     # Delete the partitions, immediately recreate them, wait for udev to settle
     # down, and then check if we have any dangling symlinks in /dev/disk/. Rinse
     # and repeat.
@@ -750,13 +755,14 @@ EOF
     for ((i = 0; i < ${#devices[@]}; i++)); do
         # Intentionally use weaker cipher-related settings, since we don't care
         # about security here as it's a throwaway LUKS partition
-        cryptsetup luksFormat -q \
-            --use-urandom --pbkdf pbkdf2 --pbkdf-force-iterations 1000 \
-            --uuid "deadbeef-dead-dead-beef-11111111111$i" --label "encdisk$i" "${devices[$i]}" /etc/btrfs_keyfile
+        udevadm lock --device="${devices[$i]}" \
+                cryptsetup luksFormat -q \
+                --use-urandom --pbkdf pbkdf2 --pbkdf-force-iterations 1000 \
+                --uuid "deadbeef-dead-dead-beef-11111111111$i" --label "encdisk$i" "${devices[$i]}" /etc/btrfs_keyfile
         udevadm wait --settle --timeout=30 "/dev/disk/by-uuid/deadbeef-dead-dead-beef-11111111111$i" "/dev/disk/by-label/encdisk$i"
         # Add the device into /etc/crypttab, reload systemd, and then activate
         # the device so we can create a filesystem on it later
-        echo "encbtrfs$i UUID=deadbeef-dead-dead-beef-11111111111$i /etc/btrfs_keyfile luks,noearly" >>/etc/crypttab
+        echo "encbtrfs$i UUID=deadbeef-dead-dead-beef-11111111111$i /etc/btrfs_keyfile luks" >>/etc/crypttab
         systemctl daemon-reload
         systemctl start "systemd-cryptsetup@encbtrfs$i"
     done

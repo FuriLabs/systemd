@@ -2155,7 +2155,6 @@ static void reset_scheduled_shutdown(Manager *m) {
         m->scheduled_shutdown_timeout = USEC_INFINITY;
         m->scheduled_shutdown_uid = UID_INVALID;
         m->scheduled_shutdown_tty = mfree(m->scheduled_shutdown_tty);
-        m->wall_message = mfree(m->wall_message);
         m->shutdown_dry_run = false;
 
         if (m->unlink_nologin) {
@@ -2549,6 +2548,9 @@ static int method_set_reboot_parameter(
         r = sd_bus_message_read(message, "s", &arg);
         if (r < 0)
                 return r;
+
+        if (!reboot_parameter_is_valid(arg))
+                return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS, "Invalid reboot parameter '%s'.", arg);
 
         r = detect_container();
         if (r < 0)

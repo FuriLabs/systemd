@@ -901,7 +901,7 @@ static int manager_assess_image(
 
                 r = btrfs_is_subvol_fd(fd);
                 if (r < 0)
-                        return log_warning_errno(errno, "Failed to determine whether %s is a btrfs subvolume: %m", path);
+                        return log_warning_errno(r, "Failed to determine whether %s is a btrfs subvolume: %m", path);
                 if (r > 0)
                         storage = USER_SUBVOLUME;
                 else {
@@ -1034,7 +1034,7 @@ static int manager_bind_varlink(Manager *m) {
         assert(!m->userdb_service);
         r = path_extract_filename(socket_path, &m->userdb_service);
         if (r < 0)
-                return log_error_errno(r, "Failed to extra filename from socket path '%s': %m", socket_path);
+                return log_error_errno(r, "Failed to extract filename from socket path '%s': %m", socket_path);
 
         /* Avoid recursion */
         if (setenv("SYSTEMD_BYPASS_USERDB", m->userdb_service, 1) < 0)
@@ -1424,7 +1424,7 @@ static int manager_generate_key_pair(Manager *m) {
         /* Write out public key (note that we only do that as a help to the user, we don't make use of this ever */
         r = fopen_temporary("/var/lib/systemd/home/local.public", &fpublic, &temp_public);
         if (r < 0)
-                return log_error_errno(errno, "Failed to open key file for writing: %m");
+                return log_error_errno(r, "Failed to open key file for writing: %m");
 
         if (PEM_write_PUBKEY(fpublic, m->private_key) <= 0)
                 return log_error_errno(SYNTHETIC_ERRNO(EIO), "Failed to write public key.");
@@ -1438,7 +1438,7 @@ static int manager_generate_key_pair(Manager *m) {
         /* Write out the private key (this actually writes out both private and public, OpenSSL is confusing) */
         r = fopen_temporary("/var/lib/systemd/home/local.private", &fprivate, &temp_private);
         if (r < 0)
-                return log_error_errno(errno, "Failed to open key file for writing: %m");
+                return log_error_errno(r, "Failed to open key file for writing: %m");
 
         if (PEM_write_PrivateKey(fprivate, m->private_key, NULL, NULL, 0, NULL, 0) <= 0)
                 return log_error_errno(SYNTHETIC_ERRNO(EIO), "Failed to write private key pair.");

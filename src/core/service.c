@@ -414,7 +414,7 @@ static void service_release_fd_store(Service *s) {
 static void service_release_stdio_fd(Service *s) {
         assert(s);
 
-        if (s->stdin_fd < 0 && s->stdout_fd < 0 && s->stdout_fd < 0)
+        if (s->stdin_fd < 0 && s->stdout_fd < 0 && s->stderr_fd < 0)
                 return;
 
         log_unit_debug(UNIT(s), "Releasing stdin/stdout/stderr file descriptors.");
@@ -661,8 +661,7 @@ static int service_verify(Service *s) {
         if (s->type != SERVICE_ONESHOT && s->exec_command[SERVICE_EXEC_START]->command_next)
                 return log_unit_error_errno(UNIT(s), SYNTHETIC_ERRNO(ENOEXEC), "Service has more than one ExecStart= setting, which is only allowed for Type=oneshot services. Refusing.");
 
-        if (s->type == SERVICE_ONESHOT &&
-            !IN_SET(s->restart, SERVICE_RESTART_NO, SERVICE_RESTART_ON_FAILURE, SERVICE_RESTART_ON_ABNORMAL, SERVICE_RESTART_ON_WATCHDOG, SERVICE_RESTART_ON_ABORT))
+        if (s->type == SERVICE_ONESHOT && IN_SET(s->restart, SERVICE_RESTART_ALWAYS, SERVICE_RESTART_ON_SUCCESS))
                 return log_unit_error_errno(UNIT(s), SYNTHETIC_ERRNO(ENOEXEC), "Service has Restart= set to either always or on-success, which isn't allowed for Type=oneshot services. Refusing.");
 
         if (s->type == SERVICE_ONESHOT && !exit_status_set_is_empty(&s->restart_force_status))
@@ -1371,7 +1370,7 @@ static int service_coldplug(Unit *u) {
                 service_start_watchdog(s);
 
         if (UNIT_ISSET(s->accept_socket)) {
-                Socket* socket = SOCKET(UNIT_DEREF(s->accept_socket));
+                Socket *socket = SOCKET(UNIT_DEREF(s->accept_socket));
 
                 if (socket->max_connections_per_source > 0) {
                         SocketPeer *peer;
@@ -3216,8 +3215,8 @@ static int service_deserialize_item(Unit *u, const char *key, const char *value,
         } else if (streq(key, "accept-socket")) {
                 Unit *socket;
 
-                if (u->type != UNIT_SOCKET) {
-                        log_unit_debug(u, "Failed to deserialize accept-socket: unit is not a socket");
+                if (unit_name_to_type(value) != UNIT_SOCKET) {
+                        log_unit_debug(u, "Deserialized accept-socket is not a socket unit, ignoring: %s", value);
                         return 0;
                 }
 
@@ -3226,7 +3225,7 @@ static int service_deserialize_item(Unit *u, const char *key, const char *value,
                         log_unit_debug_errno(u, r, "Failed to load accept-socket unit '%s': %m", value);
                 else {
                         unit_ref_set(&s->accept_socket, u, socket);
-                        SOCKET(socket)->n_connections++;
+                        ASSERT_PTR(SOCKET(socket))->n_connections++;
                 }
 
         } else if (streq(key, "socket-fd")) {
@@ -3604,8 +3603,10 @@ static void service_notify_cgroup_empty_event(Unit *u) {
                         break;
                 }
 
-                if (s->exit_type == SERVICE_EXIT_CGROUP && main_pid_good(s) <= 0)
-                        service_enter_start_post(s);
+                if (s->exit_type == SERVICE_EXIT_CGROUP && main_pid_good(s) <= 0) {
+                        service_enter_stop_post(s, SERVICE_SUCCESS);
+                        break;
+                }
 
                 _fallthrough_;
         case SERVICE_START_POST:
@@ -3876,11 +3877,13 @@ static void service_sigchld_event(Unit *u, pid_t pid, int code, int status) {
                                 default:
                                         assert_not_reached();
                                 }
-                        } else if (s->exit_type == SERVICE_EXIT_CGROUP && s->state == SERVICE_START)
+                        } else if (s->exit_type == SERVICE_EXIT_CGROUP && s->state == SERVICE_START &&
+                                   !IN_SET(s->type, SERVICE_NOTIFY, SERVICE_NOTIFY_RELOAD, SERVICE_DBUS))
                                 /* If a main process exits very quickly, this function might be executed
                                  * before service_dispatch_exec_io(). Since this function disabled IO events
                                  * to monitor the main process above, we need to update the state here too.
-                                 * Let's consider the process is successfully launched and exited. */
+                                 * Let's consider the process is successfully launched and exited, but
+                                 * only when we're not expecting a readiness notification or dbus name. */
                                 service_enter_start_post(s);
                 }
 
