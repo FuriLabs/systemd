@@ -65,6 +65,7 @@
 #include "parse-util.h"
 #include "path-lookup.h"
 #include "path-util.h"
+#include "pretty-print.h"
 #include "process-util.h"
 #include "ratelimit.h"
 #include "rlimit-util.h"
@@ -162,42 +163,6 @@ static void manager_watch_jobs_in_progress(Manager *m) {
                 return;
 
         (void) sd_event_source_set_description(m->jobs_in_progress_event_source, "manager-jobs-in-progress");
-}
-
-#define CYLON_BUFFER_EXTRA (2*STRLEN(ANSI_RED) + STRLEN(ANSI_HIGHLIGHT_RED) + 2*STRLEN(ANSI_NORMAL))
-
-static void draw_cylon(char buffer[], size_t buflen, unsigned width, unsigned pos) {
-        char *p = buffer;
-
-        assert(buflen >= CYLON_BUFFER_EXTRA + width + 1);
-        assert(pos <= width+1); /* 0 or width+1 mean that the center light is behind the corner */
-
-        if (pos > 1) {
-                if (pos > 2)
-                        p = mempset(p, ' ', pos-2);
-                if (log_get_show_color())
-                        p = stpcpy(p, ANSI_RED);
-                *p++ = '*';
-        }
-
-        if (pos > 0 && pos <= width) {
-                if (log_get_show_color())
-                        p = stpcpy(p, ANSI_HIGHLIGHT_RED);
-                *p++ = '*';
-        }
-
-        if (log_get_show_color())
-                p = stpcpy(p, ANSI_NORMAL);
-
-        if (pos < width) {
-                if (log_get_show_color())
-                        p = stpcpy(p, ANSI_RED);
-                *p++ = '*';
-                if (pos < width-1)
-                        p = mempset(p, ' ', width-1-pos);
-                if (log_get_show_color())
-                        strcpy(p, ANSI_NORMAL);
-        }
 }
 
 static void manager_flip_auto_status(Manager *m, bool enable, const char *reason) {
@@ -864,6 +829,11 @@ int manager_new(LookupScope scope, ManagerTestRunFlags test_run_flags, Manager *
                 .test_run_flags = test_run_flags,
 
                 .default_oom_policy = OOM_STOP,
+
+                .dump_ratelimit = {
+                        .interval = 10 * USEC_PER_MINUTE,
+                        .burst = 10,
+                },
         };
 
 #if ENABLE_EFI
@@ -1336,6 +1306,48 @@ static unsigned manager_dispatch_gc_job_queue(Manager *m) {
         return n;
 }
 
+static int manager_ratelimit_requeue(sd_event_source *s, uint64_t usec, void *userdata) {
+        Unit *u = userdata;
+
+        assert(u);
+        assert(s == u->auto_start_stop_event_source);
+
+        u->auto_start_stop_event_source = sd_event_source_unref(u->auto_start_stop_event_source);
+
+        /* Re-queue to all queues, if the rate limit hit we might have been throttled on any of them. */
+        unit_submit_to_stop_when_unneeded_queue(u);
+        unit_submit_to_start_when_upheld_queue(u);
+        unit_submit_to_stop_when_bound_queue(u);
+
+        return 0;
+}
+
+static int manager_ratelimit_check_and_queue(Unit *u) {
+        int r;
+
+        assert(u);
+
+        if (ratelimit_below(&u->auto_start_stop_ratelimit))
+                return 1;
+
+        /* Already queued, no need to requeue */
+        if (u->auto_start_stop_event_source)
+                return 0;
+
+        r = sd_event_add_time(
+                        u->manager->event,
+                        &u->auto_start_stop_event_source,
+                        CLOCK_MONOTONIC,
+                        ratelimit_end(&u->auto_start_stop_ratelimit),
+                        0,
+                        manager_ratelimit_requeue,
+                        u);
+        if (r < 0)
+                return log_unit_error_errno(u, r, "Failed to queue timer on event loop: %m");
+
+        return 0;
+}
+
 static unsigned manager_dispatch_stop_when_unneeded_queue(Manager *m) {
         unsigned n = 0;
         Unit *u;
@@ -1360,8 +1372,11 @@ static unsigned manager_dispatch_stop_when_unneeded_queue(Manager *m) {
                 /* If stopping a unit fails continuously we might enter a stop loop here, hence stop acting on the
                  * service being unnecessary after a while. */
 
-                if (!ratelimit_below(&u->auto_start_stop_ratelimit)) {
-                        log_unit_warning(u, "Unit not needed anymore, but not stopping since we tried this too often recently.");
+                r = manager_ratelimit_check_and_queue(u);
+                if (r <= 0) {
+                        log_unit_warning(u,
+                                         "Unit not needed anymore, but not stopping since we tried this too often recently.%s",
+                                         r == 0 ? " Will retry later." : "");
                         continue;
                 }
 
@@ -1399,8 +1414,12 @@ static unsigned manager_dispatch_start_when_upheld_queue(Manager *m) {
                 /* If stopping a unit fails continuously we might enter a stop loop here, hence stop acting on the
                  * service being unnecessary after a while. */
 
-                if (!ratelimit_below(&u->auto_start_stop_ratelimit)) {
-                        log_unit_warning(u, "Unit needs to be started because active unit %s upholds it, but not starting since we tried this too often recently.", culprit->id);
+                r = manager_ratelimit_check_and_queue(u);
+                if (r <= 0) {
+                        log_unit_warning(u,
+                                         "Unit needs to be started because active unit %s upholds it, but not starting since we tried this too often recently.%s",
+                                         culprit->id,
+                                         r == 0 ? " Will retry later." : "");
                         continue;
                 }
 
@@ -1437,8 +1456,12 @@ static unsigned manager_dispatch_stop_when_bound_queue(Manager *m) {
                 /* If stopping a unit fails continuously we might enter a stop loop here, hence stop acting on the
                  * service being unnecessary after a while. */
 
-                if (!ratelimit_below(&u->auto_start_stop_ratelimit)) {
-                        log_unit_warning(u, "Unit needs to be stopped because it is bound to inactive unit %s it, but not stopping since we tried this too often recently.", culprit->id);
+                r = manager_ratelimit_check_and_queue(u);
+                if (r <= 0) {
+                        log_unit_warning(u,
+                                         "Unit needs to be stopped because it is bound to inactive unit %s it, but not stopping since we tried this too often recently.%s",
+                                         culprit->id,
+                                         r == 0 ? " Will retry later." : "");
                         continue;
                 }
 
@@ -1734,7 +1757,8 @@ static void manager_preset_all(Manager *m) {
                 return;
 
         /* If this is the first boot, and we are in the host system, then preset everything */
-        UnitFilePresetMode mode = FIRST_BOOT_FULL_PRESET ? UNIT_FILE_PRESET_FULL : UNIT_FILE_PRESET_ENABLE_ONLY;
+        UnitFilePresetMode mode =
+                ENABLE_FIRST_BOOT_FULL_PRESET ? UNIT_FILE_PRESET_FULL : UNIT_FILE_PRESET_ENABLE_ONLY;
 
         r = unit_file_preset_all(LOOKUP_SCOPE_SYSTEM, 0, NULL, mode, NULL, 0);
         if (r < 0)
@@ -1806,6 +1830,10 @@ int manager_startup(Manager *m, FILE *serialization, FDSet *fds, const char *roo
         {
                 /* This block is (optionally) done with the reloading counter bumped */
                 _unused_ _cleanup_(manager_reloading_stopp) Manager *reloading = NULL;
+
+                /* Make sure we don't have a left-over from a previous run */
+                if (!serialization)
+                        (void) rm_rf(m->lookup_paths.transient, 0);
 
                 /* If we will deserialize make sure that during enumeration this is already known, so we increase the
                  * counter here already */

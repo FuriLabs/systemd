@@ -37,7 +37,8 @@ int pam_syslog_pam_error(pam_handle_t *handle, int level, int error, const char 
                         pamerr = "n/a";  /* We cannot have any formatting chars */
 
                 char buf[p - format + strlen(pamerr) + 1];
-                xsprintf(buf, "%*s%s", (int)(p - format), format, pamerr);
+                xsprintf(buf, "%.*s%s", (int)(p - format), format, pamerr);
+
                 DISABLE_WARNING_FORMAT_NONLITERAL;
                 pam_vsyslog(handle, level, buf, ap);
                 REENABLE_WARNING;
@@ -53,15 +54,21 @@ static void cleanup_system_bus(pam_handle_t *handle, void *data, int error_statu
         sd_bus_flush_close_unref(data);
 }
 
-int pam_acquire_bus_connection(pam_handle_t *handle, sd_bus **ret) {
+int pam_acquire_bus_connection(pam_handle_t *handle, const char *module_name, sd_bus **ret) {
         _cleanup_(sd_bus_unrefp) sd_bus *bus = NULL;
+        _cleanup_free_ char *cache_id = NULL;
         int r;
 
         assert(handle);
+        assert(module_name);
         assert(ret);
 
+        cache_id = strjoin("system-bus-", module_name);
+        if (!cache_id)
+                return pam_log_oom(handle);
+
         /* We cache the bus connection so that we can share it between the session and the authentication hooks */
-        r = pam_get_data(handle, "systemd-system-bus", (const void**) &bus);
+        r = pam_get_data(handle, cache_id, (const void**) &bus);
         if (r == PAM_SUCCESS && bus) {
                 *ret = sd_bus_ref(TAKE_PTR(bus)); /* Increase the reference counter, so that the PAM data stays valid */
                 return PAM_SUCCESS;
@@ -73,7 +80,7 @@ int pam_acquire_bus_connection(pam_handle_t *handle, sd_bus **ret) {
         if (r < 0)
                 return pam_syslog_errno(handle, LOG_ERR, r, "Failed to connect to system bus: %m");
 
-        r = pam_set_data(handle, "systemd-system-bus", bus, cleanup_system_bus);
+        r = pam_set_data(handle, cache_id, bus, cleanup_system_bus);
         if (r != PAM_SUCCESS)
                 return pam_syslog_pam_error(handle, LOG_ERR, r, "Failed to set PAM bus data: @PAMERR@");
 
@@ -83,10 +90,17 @@ int pam_acquire_bus_connection(pam_handle_t *handle, sd_bus **ret) {
         return PAM_SUCCESS;
 }
 
-int pam_release_bus_connection(pam_handle_t *handle) {
+int pam_release_bus_connection(pam_handle_t *handle, const char *module_name) {
+        _cleanup_free_ char *cache_id = NULL;
         int r;
 
-        r = pam_set_data(handle, "systemd-system-bus", NULL, NULL);
+        assert(module_name);
+
+        cache_id = strjoin("system-bus-", module_name);
+        if (!cache_id)
+                return pam_log_oom(handle);
+
+        r = pam_set_data(handle, cache_id, NULL, NULL);
         if (r != PAM_SUCCESS)
                 return pam_syslog_pam_error(handle, LOG_ERR, r, "Failed to release PAM user record data: @PAMERR@");
 

@@ -10,10 +10,12 @@
 #include "fileio.h"
 #include "fs-util.h"
 #include "hexdecoct.h"
+#include "io-util.h"
 #include "log.h"
 #include "macro.h"
 #include "mkdir.h"
 #include "path-util.h"
+#include "random-util.h"
 #include "rm-rf.h"
 #include "string-util.h"
 #include "strv.h"
@@ -160,7 +162,7 @@ TEST(copy_tree) {
         (void) rm_rf(original_dir, REMOVE_ROOT|REMOVE_PHYSICAL);
 
         STRV_FOREACH(p, files) {
-                _cleanup_free_ char *f, *c;
+                _cleanup_free_ char *f = NULL, *c = NULL;
                 int k;
 
                 assert_se(f = path_join(original_dir, *p));
@@ -175,7 +177,7 @@ TEST(copy_tree) {
         }
 
         STRV_FOREACH_PAIR(ll, p, symlinks) {
-                _cleanup_free_ char *f, *l;
+                _cleanup_free_ char *f = NULL, *l = NULL;
 
                 assert_se(f = path_join(original_dir, *p));
                 assert_se(l = path_join(original_dir, *ll));
@@ -185,7 +187,7 @@ TEST(copy_tree) {
         }
 
         STRV_FOREACH_PAIR(ll, p, hardlinks) {
-                _cleanup_free_ char *f, *l;
+                _cleanup_free_ char *f = NULL, *l = NULL;
 
                 assert_se(f = path_join(original_dir, *p));
                 assert_se(l = path_join(original_dir, *ll));
@@ -200,7 +202,7 @@ TEST(copy_tree) {
         assert_se(copy_tree(original_dir, copy_dir, UID_INVALID, GID_INVALID, COPY_REFLINK|COPY_MERGE|COPY_HARDLINKS) == 0);
 
         STRV_FOREACH(p, files) {
-                _cleanup_free_ char *buf, *f, *c = NULL;
+                _cleanup_free_ char *buf = NULL, *f = NULL, *c = NULL;
                 size_t sz;
                 int k;
 
@@ -222,7 +224,7 @@ TEST(copy_tree) {
         }
 
         STRV_FOREACH_PAIR(ll, p, symlinks) {
-                _cleanup_free_ char *target, *f, *l;
+                _cleanup_free_ char *target = NULL, *f = NULL, *l = NULL;
 
                 assert_se(f = strjoin(original_dir, *p));
                 assert_se(l = strjoin(copy_dir, *ll));
@@ -232,7 +234,7 @@ TEST(copy_tree) {
         }
 
         STRV_FOREACH_PAIR(ll, p, hardlinks) {
-                _cleanup_free_ char *f, *l;
+                _cleanup_free_ char *f = NULL, *l = NULL;
                 struct stat a, b;
 
                 assert_se(f = strjoin(copy_dir, *p));
@@ -443,6 +445,78 @@ TEST_RET(copy_holes) {
 
         unlink(fn);
         unlink(fn_copy);
+
+        return 0;
+}
+
+TEST_RET(copy_holes_with_gaps) {
+        _cleanup_(rm_rf_physical_and_freep) char *t = NULL;
+        _cleanup_close_ int tfd = -EBADF, fd = -EBADF, fd_copy = -EBADF;
+        struct stat st;
+        off_t blksz;
+        char *buf;
+        int r;
+
+        assert_se(mkdtemp_malloc(NULL, &t) >= 0);
+        assert_se((tfd = open(t, O_DIRECTORY | O_CLOEXEC)) >= 0);
+        assert_se((fd = openat(tfd, "src", O_CREAT | O_RDWR, 0600)) >= 0);
+        assert_se((fd_copy = openat(tfd, "dst", O_CREAT | O_WRONLY, 0600)) >= 0);
+
+        assert_se(fstat(fd, &st) >= 0);
+        blksz = st.st_blksize;
+        buf = alloca_safe(blksz);
+        memset(buf, 1, blksz);
+
+        /* Create a file with:
+         *  - hole of 1 block
+         *  - data of 2 block
+         *  - hole of 2 blocks
+         *  - data of 1 block
+         *
+         * Since sparse files are based on blocks and not bytes, we need to make
+         * sure that the holes are aligned to the block size.
+         */
+
+        r = RET_NERRNO(fallocate(fd, FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE, 0, blksz));
+        if (ERRNO_IS_NOT_SUPPORTED(r))
+                return log_tests_skipped("Filesystem doesn't support hole punching");
+
+        assert_se(lseek(fd, blksz, SEEK_CUR) >= 0);
+        assert_se(loop_write(fd, buf, blksz, 0) >= 0);
+        assert_se(loop_write(fd, buf, blksz, 0) >= 0);
+        assert_se(lseek(fd, 2 * blksz, SEEK_CUR) >= 0);
+        assert_se(loop_write(fd, buf, blksz, 0) >= 0);
+        assert_se(lseek(fd, 0, SEEK_SET) >= 0);
+        assert_se(fsync(fd) >= 0);
+
+        /* Copy to the start of the second hole */
+        assert_se(copy_bytes(fd, fd_copy, 3 * blksz, COPY_HOLES) >= 0);
+        assert_se(fstat(fd_copy, &st) >= 0);
+        assert_se(st.st_size == 3 * blksz);
+
+        /* Copy to the middle of the second hole */
+        assert_se(lseek(fd, 0, SEEK_SET) >= 0);
+        assert_se(lseek(fd_copy, 0, SEEK_SET) >= 0);
+        assert_se(ftruncate(fd_copy, 0) >= 0);
+        assert_se(copy_bytes(fd, fd_copy, 4 * blksz, COPY_HOLES) >= 0);
+        assert_se(fstat(fd_copy, &st) >= 0);
+        assert_se(st.st_size == 4 * blksz);
+
+        /* Copy to the end of the second hole */
+        assert_se(lseek(fd, 0, SEEK_SET) >= 0);
+        assert_se(lseek(fd_copy, 0, SEEK_SET) >= 0);
+        assert_se(ftruncate(fd_copy, 0) >= 0);
+        assert_se(copy_bytes(fd, fd_copy, 5 * blksz, COPY_HOLES) >= 0);
+        assert_se(fstat(fd_copy, &st) >= 0);
+        assert_se(st.st_size == 5 * blksz);
+
+        /* Copy everything */
+        assert_se(lseek(fd, 0, SEEK_SET) >= 0);
+        assert_se(lseek(fd_copy, 0, SEEK_SET) >= 0);
+        assert_se(ftruncate(fd_copy, 0) >= 0);
+        assert_se(copy_bytes(fd, fd_copy, UINT64_MAX, COPY_HOLES) >= 0);
+        assert_se(fstat(fd_copy, &st) >= 0);
+        assert_se(st.st_size == 6 * blksz);
 
         return 0;
 }

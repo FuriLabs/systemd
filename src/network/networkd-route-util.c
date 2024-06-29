@@ -3,6 +3,7 @@
 #include <linux/rtnetlink.h>
 
 #include "alloc-util.h"
+#include "missing_threads.h"
 #include "networkd-address.h"
 #include "networkd-link.h"
 #include "networkd-manager.h"
@@ -35,6 +36,14 @@ unsigned routes_max(void) {
         cached = MAX(ROUTES_DEFAULT_MAX_PER_FAMILY, val4) +
                  MAX(ROUTES_DEFAULT_MAX_PER_FAMILY, val6);
         return cached;
+}
+
+static bool route_lifetime_is_valid(const Route *route) {
+        assert(route);
+
+        return
+                route->lifetime_usec == USEC_INFINITY ||
+                route->lifetime_usec > now(CLOCK_BOOTTIME);
 }
 
 static Route *link_find_default_gateway(Link *link, int family, Route *gw) {
@@ -121,6 +130,8 @@ bool gateway_is_ready(Link *link, bool onlink, int family, const union in_addr_u
         SET_FOREACH(route, link->routes) {
                 if (!route_exists(route))
                         continue;
+                if (!route_lifetime_is_valid(route))
+                        continue;
                 if (route->family != family)
                         continue;
                 if (!in_addr_is_set(route->family, &route->dst) && route->dst_prefixlen == 0)
@@ -141,9 +152,9 @@ bool gateway_is_ready(Link *link, bool onlink, int family, const union in_addr_u
                         continue;
                 if (FLAGS_SET(a->flags, IFA_F_NOPREFIXROUTE))
                         continue;
-                if (in_addr_is_set(a->family, &a->in_addr_peer))
-                        continue;
-                if (in_addr_prefix_covers(family, &a->in_addr, a->prefixlen, gw) > 0)
+                if (in_addr_prefix_covers(a->family,
+                                          in_addr_is_set(a->family, &a->in_addr_peer) ? &a->in_addr_peer : &a->in_addr,
+                                          a->prefixlen, gw) > 0)
                         return true;
         }
 
@@ -165,6 +176,9 @@ static int link_address_is_reachable_internal(
 
         SET_FOREACH(route, link->routes) {
                 if (!route_exists(route))
+                        continue;
+
+                if (!route_lifetime_is_valid(route))
                         continue;
 
                 if (route->type != RTN_UNICAST)

@@ -100,11 +100,11 @@ test_suspend_on_lid() {
         echo "suspend not supported on this testbed, skipping"
         return
     fi
-    if ! command -v evemu-device &>/dev/null; then
+    if ! command -v evemu-device >/dev/null; then
         echo "command evemu-device not found, skipping"
         return
     fi
-    if ! command -v evemu-event &>/dev/null; then
+    if ! command -v evemu-event >/dev/null; then
         echo "command evemu-event not found, skipping"
         return
     fi
@@ -330,8 +330,8 @@ EOF
     systemctl restart getty@tty2.service
 
     # check session
-    for ((i = 0; i < 30; i++)); do
-        (( i != 0 )) && sleep 1
+    for i in {1..30}; do
+        (( i > 1 )) && sleep 1
         check_session && break
     done
     check_session

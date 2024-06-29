@@ -42,8 +42,6 @@
 #include "strv.h"
 #include "syslog-util.h"
 
-#define JOURNAL_FILES_MAX 7168
-
 #define JOURNAL_FILES_RECHECK_USEC (2 * USEC_PER_SEC)
 
 /* The maximum size of variable values we'll expand in catalog entries. We bind this to PATH_MAX for now, as
@@ -239,7 +237,8 @@ _public_ int sd_journal_add_match(sd_journal *j, const void *data, size_t size) 
         if (size == 0)
                 size = strlen(data);
 
-        assert_return(match_is_valid(data, size), -EINVAL);
+        if (!match_is_valid(data, size))
+                return -EINVAL;
 
         /* level 0: AND term
          * level 1: OR terms
@@ -613,7 +612,7 @@ static int find_location_for_match(
                         return journal_file_move_to_entry_by_seqnum_for_data(f, d, j->current_location.seqnum, direction, ret, offset);
                 if (j->current_location.monotonic_set) {
                         r = journal_file_move_to_entry_by_monotonic_for_data(f, d, j->current_location.boot_id, j->current_location.monotonic, direction, ret, offset);
-                        if (r != -ENOENT)
+                        if (r != 0)
                                 return r;
 
                         /* The data object might have been invalidated. */
@@ -708,7 +707,7 @@ static int find_location_with_matches(
                         return journal_file_move_to_entry_by_seqnum(f, j->current_location.seqnum, direction, ret, offset);
                 if (j->current_location.monotonic_set) {
                         r = journal_file_move_to_entry_by_monotonic(f, j->current_location.boot_id, j->current_location.monotonic, direction, ret, offset);
-                        if (r != -ENOENT)
+                        if (r != 0)
                                 return r;
                 }
                 if (j->current_location.realtime_set)
@@ -1594,7 +1593,7 @@ static void directory_watch(sd_journal *j, Directory *m, int fd, uint32_t mask) 
 
         m->wd = inotify_add_watch_fd(j->inotify_fd, fd, mask);
         if (m->wd < 0) {
-                log_debug_errno(errno, "Failed to watch journal directory '%s', ignoring: %m", m->path);
+                log_debug_errno(m->wd, "Failed to watch journal directory '%s', ignoring: %m", m->path);
                 return;
         }
 
@@ -2216,9 +2215,7 @@ _public_ int sd_journal_get_monotonic_usec(sd_journal *j, uint64_t *ret, sd_id12
         if (r < 0)
                 return r;
 
-        if (ret_boot_id)
-                *ret_boot_id = o->entry.boot_id;
-        else {
+        if (!ret_boot_id) {
                 sd_id128_t id;
 
                 r = sd_id128_get_boot(&id);
@@ -2231,6 +2228,8 @@ _public_ int sd_journal_get_monotonic_usec(sd_journal *j, uint64_t *ret, sd_id12
 
         if (ret)
                 *ret = le64toh(o->entry.monotonic);
+        if (ret_boot_id)
+                *ret_boot_id = o->entry.boot_id;
 
         return 0;
 }
@@ -2794,7 +2793,9 @@ _public_ int sd_journal_query_unique(sd_journal *j, const char *field) {
         assert_return(j, -EINVAL);
         assert_return(!journal_pid_changed(j), -ECHILD);
         assert_return(!isempty(field), -EINVAL);
-        assert_return(field_is_valid(field), -EINVAL);
+
+        if (!field_is_valid(field))
+                return -EINVAL;
 
         r = free_and_strdup(&j->unique_field, field);
         if (r < 0)

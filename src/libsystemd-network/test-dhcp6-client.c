@@ -461,6 +461,8 @@ TEST(client_parse_message_issue_24002) {
                 0x20, 0x03, 0x00, 0xff, 0xaa, 0xbb, 0xcc, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* prefix */
                 /* Rapid commit */
                 0x00, 0x0e, 0x00, 0x00,
+                /* Trailing invalid byte at the end. See issue #28183. */
+                00,
         };
         static const uint8_t duid[] = {
                 0x00, 0x00, 0xab, 0x11, 0x5c, 0x6b, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff,
@@ -1001,7 +1003,7 @@ TEST(dhcp6_client) {
 
         assert_se(sd_event_new(&e) >= 0);
         assert_se(sd_event_add_time_relative(e, NULL, CLOCK_BOOTTIME,
-                                             2 * USEC_PER_SEC, 0,
+                                             30 * USEC_PER_SEC, 0,
                                              NULL, INT_TO_PTR(-ETIMEDOUT)) >= 0);
 
         assert_se(sd_dhcp6_client_new(&client) >= 0);

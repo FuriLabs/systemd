@@ -342,9 +342,12 @@ void install_changes_dump(int r, const char *verb, const InstallChange *changes,
         assert(verb || r >= 0);
 
         for (size_t i = 0; i < n_changes; i++) {
-                if (changes[i].type < 0)
-                        assert(verb);
                 assert(changes[i].path);
+                /* This tries to tell the compiler that it's safe to use 'verb' in a string format if there
+                 * was an error, but the compiler doesn't care and fails anyway, so strna(verb) is used
+                 * too. */
+                assert(verb || changes[i].type >= 0);
+                verb = strna(verb);
 
                 /* When making changes here, make sure to also change install_error() in dbus-manager.c. */
 
@@ -1658,7 +1661,7 @@ static int install_info_traverse(
                 r = install_info_follow(ctx, i, lp, flags,
                                         /* If linked, don't look at the target name */
                                         /* ignore_different_name= */ i->install_mode == INSTALL_MODE_LINKED);
-                if (r == -EXDEV) {
+                if (r == -EXDEV && i->symlink_target) {
                         _cleanup_free_ char *buffer = NULL;
                         const char *bn;
 
@@ -1987,6 +1990,8 @@ static int install_info_symlink_wants(
                         install_changes_add(changes, n_changes, q, *s, NULL);
                         if (r >= 0)
                                 r = q;
+
+                        continue;
                 }
 
                 if (!unit_name_is_valid(dst, valid_dst_type)) {
@@ -2989,9 +2994,6 @@ int unit_file_get_default(
 
         r = install_info_discover(&ctx, &lp, SPECIAL_DEFAULT_TARGET, SEARCH_FOLLOW_CONFIG_SYMLINKS,
                                   &info, NULL, NULL);
-        if (r < 0)
-                return r;
-        r = install_info_may_process(info, &lp, NULL, 0);
         if (r < 0)
                 return r;
 

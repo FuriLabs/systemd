@@ -201,6 +201,9 @@ static int mount_arm_timer(Mount *m, usec_t usec) {
 
         assert(m);
 
+        if (usec == USEC_INFINITY)
+                return sd_event_source_set_enabled(m->timer_event_source, SD_EVENT_OFF);
+
         if (m->timer_event_source) {
                 r = sd_event_source_set_time(m->timer_event_source, usec);
                 if (r < 0)
@@ -208,9 +211,6 @@ static int mount_arm_timer(Mount *m, usec_t usec) {
 
                 return sd_event_source_set_enabled(m->timer_event_source, SD_EVENT_ONESHOT);
         }
-
-        if (usec == USEC_INFINITY)
-                return 0;
 
         r = sd_event_add_time(
                         UNIT(m)->manager->event,
@@ -484,10 +484,17 @@ static int mount_add_default_ordering_dependencies(Mount *m, MountParameters *p,
         if (e && in_initrd()) {
                 /* All mounts under /sysroot need to happen later, at initrd-fs.target time. IOW,
                  * it's not technically part of the basic initrd filesystem itself, and so
-                 * shouldn't inherit the default Before=local-fs.target dependency. */
+                 * shouldn't inherit the default Before=local-fs.target dependency. However,
+                 * these mounts still need to start after local-fs-pre.target, as a sync point
+                 * for things like systemd-hibernate-resume@.service that should start before
+                 * any mounts. */
 
-                after = NULL;
+                after = SPECIAL_LOCAL_FS_PRE_TARGET;
                 before = isempty(e) ? SPECIAL_INITRD_ROOT_FS_TARGET : SPECIAL_INITRD_FS_TARGET;
+
+        } else if (in_initrd() && path_startswith(m->where, "/sysusr/usr")) {
+                after = SPECIAL_LOCAL_FS_PRE_TARGET;
+                before = SPECIAL_INITRD_USR_FS_TARGET;
 
         } else if (mount_is_network(p)) {
                 after = SPECIAL_REMOTE_FS_PRE_TARGET;
@@ -504,11 +511,9 @@ static int mount_add_default_ordering_dependencies(Mount *m, MountParameters *p,
                         return r;
         }
 
-        if (after) {
-                r = unit_add_dependency_by_name(UNIT(m), UNIT_AFTER, after, /* add_reference= */ true, mask);
-                if (r < 0)
-                        return r;
-        }
+        r = unit_add_dependency_by_name(UNIT(m), UNIT_AFTER, after, /* add_reference= */ true, mask);
+        if (r < 0)
+                return r;
 
         return unit_add_two_dependencies_by_name(UNIT(m), UNIT_BEFORE, UNIT_CONFLICTS, SPECIAL_UMOUNT_TARGET,
                                                  /* add_reference= */ true, mask);
@@ -1093,9 +1098,11 @@ static void mount_enter_mounting(Mount *m) {
         }
 
         if (source_is_dir)
-                (void) mkdir_p_label(m->where, m->directory_mode);
+                r = mkdir_p_label(m->where, m->directory_mode);
         else
-                (void) touch_file(m->where, /* parents = */ true, USEC_INFINITY, UID_INVALID, GID_INVALID, MODE_INVALID);
+                r = touch_file(m->where, /* parents = */ true, USEC_INFINITY, UID_INVALID, GID_INVALID, MODE_INVALID);
+        if (r < 0 && r != -EEXIST)
+                log_unit_warning_errno(UNIT(m), r, "Failed to create mount point '%s', ignoring: %m", m->where);
 
         if (source_is_dir)
                 unit_warn_if_dir_nonempty(UNIT(m), m->where);
@@ -1461,7 +1468,8 @@ static void mount_sigchld_event(Unit *u, pid_t pid, int code, int status) {
 
         if (IN_SET(m->state, MOUNT_REMOUNTING, MOUNT_REMOUNTING_SIGKILL, MOUNT_REMOUNTING_SIGTERM))
                 mount_set_reload_result(m, f);
-        else if (m->result == MOUNT_SUCCESS)
+        else if (m->result == MOUNT_SUCCESS && !IN_SET(m->state, MOUNT_MOUNTING, MOUNT_UNMOUNTING))
+                /* MOUNT_MOUNTING and MOUNT_UNMOUNTING states need to be patched, see below. */
                 m->result = f;
 
         if (m->control_command) {
@@ -1484,11 +1492,11 @@ static void mount_sigchld_event(Unit *u, pid_t pid, int code, int status) {
         switch (m->state) {
 
         case MOUNT_MOUNTING:
-                /* Our mount point has not appeared in mountinfo.  Something went wrong. */
+                /* Our mount point has not appeared in mountinfo. Something went wrong. */
 
                 if (f == MOUNT_SUCCESS) {
-                        /* Either /bin/mount has an unexpected definition of success,
-                         * or someone raced us and we lost. */
+                        /* Either /bin/mount has an unexpected definition of success, or someone raced us
+                         * and we lost. */
                         log_unit_warning(UNIT(m), "Mount process finished, but there is no mount.");
                         f = MOUNT_FAILURE_PROTOCOL;
                 }
@@ -1506,9 +1514,7 @@ static void mount_sigchld_event(Unit *u, pid_t pid, int code, int status) {
                 break;
 
         case MOUNT_UNMOUNTING:
-
                 if (f == MOUNT_SUCCESS && m->from_proc_self_mountinfo) {
-
                         /* Still a mount point? If so, let's try again. Most likely there were multiple mount points
                          * stacked on top of each other. We might exceed the timeout specified by the user overall,
                          * but we will stop as soon as any one umount times out. */
@@ -1519,15 +1525,20 @@ static void mount_sigchld_event(Unit *u, pid_t pid, int code, int status) {
                                 mount_enter_unmounting(m);
                         } else {
                                 log_unit_warning(u, "Mount still present after %u attempts to unmount, giving up.", m->n_retry_umount);
-                                mount_enter_mounted(m, f);
+                                mount_enter_mounted(m, MOUNT_FAILURE_PROTOCOL);
                         }
+                } else if (f == MOUNT_FAILURE_EXIT_CODE && !m->from_proc_self_mountinfo) {
+                        /* Hmm, umount process spawned by us failed, but the mount disappeared anyway?
+                         * Maybe someone else is trying to unmount at the same time. */
+                        log_unit_notice(u, "Mount disappeared even though umount process failed, continuing.");
+                        mount_enter_dead(m, MOUNT_SUCCESS);
                 } else
                         mount_enter_dead_or_mounted(m, f);
 
                 break;
 
-        case MOUNT_UNMOUNTING_SIGKILL:
         case MOUNT_UNMOUNTING_SIGTERM:
+        case MOUNT_UNMOUNTING_SIGKILL:
                 mount_enter_dead_or_mounted(m, f);
                 break;
 
@@ -2071,7 +2082,7 @@ static int mount_process_proc_self_mountinfo(Manager *m) {
                                  * then remove it because of an internal error. E.g., fuse.sshfs seems
                                  * to do that when the connection fails. See #17617. To handle such the
                                  * case, let's once set the state back to mounting. Then, the unit can
-                                 * correctly enter the failed state later in mount_sigchld(). */
+                                 * correctly enter the failed state later in mount_sigchld_event(). */
                                 mount_set_state(mount, MOUNT_MOUNTING);
                                 break;
 

@@ -189,7 +189,7 @@ static int check_options(uint8_t code, uint8_t len, const void *option, void *us
 
 int dhcp_network_send_raw_socket(int s, const union sockaddr_union *link, const void *packet, size_t len) {
         size_t size;
-        _cleanup_free_ DHCPPacket *discover;
+        _cleanup_free_ DHCPPacket *discover = NULL;
         uint16_t ip_check, udp_check;
 
         assert_se(s >= 0);
@@ -513,7 +513,7 @@ static void test_addr_acq(sd_event *e) {
         callback_recv = test_addr_acq_recv_discover;
 
         assert_se(sd_event_add_time_relative(e, NULL, CLOCK_BOOTTIME,
-                                             2 * USEC_PER_SEC, 0,
+                                             30 * USEC_PER_SEC, 0,
                                              NULL, INT_TO_PTR(-ETIMEDOUT)) >= 0);
 
         res = sd_dhcp_client_start(client);

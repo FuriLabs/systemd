@@ -110,7 +110,7 @@ static char *arg_verify_key = NULL;
 static usec_t arg_interval = DEFAULT_FSS_INTERVAL_USEC;
 static bool arg_force = false;
 #endif
-static usec_t arg_since, arg_until;
+static usec_t arg_since = 0, arg_until = 0;
 static bool arg_since_set = false, arg_until_set = false;
 static char **arg_syslog_identifier = NULL;
 static char **arg_system_units = NULL;
@@ -336,7 +336,7 @@ static int help(void) {
                "  -u --unit=UNIT             Show logs from the specified unit\n"
                "     --user-unit=UNIT        Show logs from the specified user unit\n"
                "  -t --identifier=STRING     Show entries with the specified syslog identifier\n"
-               "  -p --priority=RANGE        Show entries with the specified priority\n"
+               "  -p --priority=RANGE        Show entries within the specified priority range\n"
                "     --facility=FACILITY...  Show entries with the specified facilities\n"
                "  -g --grep=PATTERN          Show entries with MESSAGE matching PATTERN\n"
                "     --case-sensitive[=BOOL] Force case sensitive or insensitive matching\n"
@@ -542,11 +542,6 @@ static int parse_argv(int argc, char *argv[]) {
 
                 case 'f':
                         arg_follow = true;
-
-                        arg_boot = true;
-                        arg_boot_id = SD_ID128_NULL;
-                        arg_boot_offset = 0;
-
                         break;
 
                 case 'o':
@@ -1041,10 +1036,19 @@ static int parse_argv(int argc, char *argv[]) {
                         assert_not_reached();
                 }
 
-        if (arg_follow && !arg_no_tail && !arg_since && arg_lines == ARG_LINES_DEFAULT)
+        if (arg_no_tail)
+                arg_lines = ARG_LINES_ALL;
+
+        if (arg_follow && !arg_since_set && arg_lines == ARG_LINES_DEFAULT)
                 arg_lines = 10;
 
-        if (!!arg_directory + !!arg_file + !!arg_machine + !!arg_root + !!arg_image > 1)
+        if (arg_follow && !arg_merge && !arg_boot) {
+                arg_boot = true;
+                arg_boot_id = SD_ID128_NULL;
+                arg_boot_offset = 0;
+        }
+
+        if (!!arg_directory + !!arg_file + arg_file_stdin + !!arg_machine + !!arg_root + !!arg_image > 1)
                 return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
                                        "Please specify at most one of -D/--directory=, --file=, -M/--machine=, --root=, --image=.");
 
@@ -1084,6 +1088,13 @@ static int parse_argv(int argc, char *argv[]) {
                 r = pattern_compile_and_log(arg_pattern, arg_case, &arg_compiled_pattern);
                 if (r < 0)
                         return r;
+
+                /* When --grep is used along with --lines, we don't know how many lines we can print.
+                 * So we search backwards and count until enough lines have been printed or we hit the head.
+                 * An exception is that --follow might set arg_lines, so let's not imply --reverse
+                 * if that is specified. */
+                if (arg_lines >= 0 && !arg_follow)
+                        arg_reverse = true;
         }
 
         return 1;

@@ -62,9 +62,9 @@ static int search_policy_hash(
 }
 
 static int get_pin(char **ret_pin_str, TPM2Flags *ret_flags) {
-        _cleanup_free_ char *pin_str = NULL;
-        int r;
+        _cleanup_(erase_and_freep) char *pin_str = NULL;
         TPM2Flags flags = 0;
+        int r;
 
         assert(ret_pin_str);
         assert(ret_flags);
@@ -169,16 +169,13 @@ int enroll_tpm2(struct crypt_device *cd,
 
                 log_debug_errno(r, "Failed to read TPM2 PCR public key, proceeding without: %m");
                 pubkey_pcr_mask = 0;
-        } else {
-                /* Also try to load the signature JSON object, to verify that our enrollment will work. This is optional however. */
+        } else if (signature_path) {
+                /* Also try to load the signature JSON object, to verify that our enrollment will work.
+                 * This is optional however, skip it if it's not explicitly provided. */
 
                 r = tpm2_load_pcr_signature(signature_path, &signature_json);
-                if (r < 0) {
-                        if (signature_path || r != -ENOENT)
-                                return log_debug_errno(r, "Failed to read TPM PCR signature: %m");
-
-                        log_debug_errno(r, "Failed to read TPM2 PCR signature, proceeding without: %m");
-                }
+                if (r < 0)
+                        return log_debug_errno(r, "Failed to read TPM PCR signature: %m");
         }
 
         r = tpm2_seal(device,

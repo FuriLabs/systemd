@@ -27,7 +27,7 @@
 #define DHCP_DEFAULT_LEASE_TIME_USEC USEC_PER_HOUR
 #define DHCP_MAX_LEASE_TIME_USEC (USEC_PER_HOUR*12)
 
-static DHCPLease *dhcp_lease_free(DHCPLease *lease) {
+DHCPLease *dhcp_lease_free(DHCPLease *lease) {
         if (!lease)
                 return NULL;
 
@@ -41,8 +41,6 @@ static DHCPLease *dhcp_lease_free(DHCPLease *lease) {
         free(lease->client_id.data);
         return mfree(lease);
 }
-
-DEFINE_TRIVIAL_CLEANUP_FUNC(DHCPLease*, dhcp_lease_free);
 
 /* configures the server's address and subnet, and optionally the pool's size and offset into the subnet
  * the whole pool must fit into the subnet, and may not contain the first (any) nor last (broadcast) address
@@ -114,7 +112,8 @@ int sd_dhcp_server_configure_pool(
 }
 
 int sd_dhcp_server_is_running(sd_dhcp_server *server) {
-        assert_return(server, false);
+        if (!server)
+                return false;
 
         return !!server->receive_message;
 }
@@ -390,7 +389,7 @@ static int dhcp_server_send_udp(sd_dhcp_server *server, be32_t destination,
         assert(server);
         assert(server->fd >= 0);
         assert(message);
-        assert(len > sizeof(DHCPMessage));
+        assert(len >= sizeof(DHCPMessage));
 
         if (server->bind_to_interface) {
                 msg.msg_control = &control;
@@ -1081,7 +1080,7 @@ int dhcp_server_handle_message(sd_dhcp_server *server, DHCPMessage *message, siz
 
         type = dhcp_option_parse(message, length, parse_request, req, &error_message);
         if (type < 0)
-                return 0;
+                return type;
 
         r = ensure_sane_request(server, req, message);
         if (r < 0)

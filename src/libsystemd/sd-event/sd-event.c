@@ -19,6 +19,7 @@
 #include "macro.h"
 #include "memory-util.h"
 #include "missing_syscall.h"
+#include "missing_threads.h"
 #include "prioq.h"
 #include "process-util.h"
 #include "set.h"
@@ -1150,22 +1151,21 @@ _public_ int sd_event_add_io(
 }
 
 static void initialize_perturb(sd_event *e) {
-        sd_id128_t bootid = {};
+        sd_id128_t id = {};
 
-        /* When we sleep for longer, we try to realign the wakeup to
-           the same time within each minute/second/250ms, so that
-           events all across the system can be coalesced into a single
-           CPU wakeup. However, let's take some system-specific
-           randomness for this value, so that in a network of systems
-           with synced clocks timer events are distributed a
-           bit. Here, we calculate a perturbation usec offset from the
-           boot ID. */
+        /* When we sleep for longer, we try to realign the wakeup to the same time within each
+         * minute/second/250ms, so that events all across the system can be coalesced into a single CPU
+         * wakeup. However, let's take some system-specific randomness for this value, so that in a network
+         * of systems with synced clocks timer events are distributed a bit. Here, we calculate a
+         * perturbation usec offset from the boot ID (or machine ID if failed, e.g. /proc is not mounted). */
 
         if (_likely_(e->perturb != USEC_INFINITY))
                 return;
 
-        if (sd_id128_get_boot(&bootid) >= 0)
-                e->perturb = (bootid.qwords[0] ^ bootid.qwords[1]) % USEC_PER_MINUTE;
+        if (sd_id128_get_boot(&id) >= 0 || sd_id128_get_machine(&id) >= 0)
+                e->perturb = (id.qwords[0] ^ id.qwords[1]) % USEC_PER_MINUTE;
+        else
+                e->perturb = 0; /* This is a super early process without /proc and /etc ?? */
 }
 
 static int event_setup_timer_fd(
@@ -2034,7 +2034,7 @@ static int inode_data_realize_watch(sd_event *e, struct inode_data *d) {
 
         wd = inotify_add_watch_fd(d->inotify_data->fd, d->fd, combined_mask);
         if (wd < 0)
-                return -errno;
+                return wd;
 
         if (d->wd < 0) {
                 r = hashmap_put(d->inotify_data->wd, INT_TO_PTR(wd), d);
@@ -2223,7 +2223,6 @@ _public_ int sd_event_source_set_description(sd_event_source *s, const char *des
 _public_ int sd_event_source_get_description(sd_event_source *s, const char **description) {
         assert_return(s, -EINVAL);
         assert_return(description, -EINVAL);
-        assert_return(!event_pid_changed(s->event), -ECHILD);
 
         if (!s->description)
                 return -ENXIO;
@@ -2256,7 +2255,7 @@ _public_ int sd_event_source_get_io_fd(sd_event_source *s) {
 }
 
 _public_ int sd_event_source_set_io_fd(sd_event_source *s, int fd) {
-        int r;
+        int saved_fd, r;
 
         assert_return(s, -EINVAL);
         assert_return(fd >= 0, -EBADF);
@@ -2266,16 +2265,12 @@ _public_ int sd_event_source_set_io_fd(sd_event_source *s, int fd) {
         if (s->io.fd == fd)
                 return 0;
 
-        if (event_source_is_offline(s)) {
-                s->io.fd = fd;
-                s->io.registered = false;
-        } else {
-                int saved_fd;
+        saved_fd = s->io.fd;
+        s->io.fd = fd;
 
-                saved_fd = s->io.fd;
-                assert(s->io.registered);
+        assert(event_source_is_offline(s) == !s->io.registered);
 
-                s->io.fd = fd;
+        if (s->io.registered) {
                 s->io.registered = false;
 
                 r = source_io_register(s, s->enabled, s->io.events);
@@ -2287,6 +2282,9 @@ _public_ int sd_event_source_set_io_fd(sd_event_source *s, int fd) {
 
                 (void) epoll_ctl(s->event->epoll_fd, EPOLL_CTL_DEL, saved_fd, NULL);
         }
+
+        if (s->io.owned)
+                safe_close(saved_fd);
 
         return 0;
 }

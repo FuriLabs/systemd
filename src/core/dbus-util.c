@@ -6,6 +6,7 @@
 #include "escape.h"
 #include "parse-util.h"
 #include "path-util.h"
+#include "reboot-util.h"
 #include "unit-printf.h"
 #include "user-util.h"
 #include "unit.h"
@@ -30,7 +31,7 @@ int bus_property_get_triggered_unit(
         return sd_bus_message_append(reply, "s", trigger ? trigger->id : NULL);
 }
 
-BUS_DEFINE_SET_TRANSIENT(mode_t, "u", uint32_t, mode_t, "%040o");
+BUS_DEFINE_SET_TRANSIENT(mode_t, "u", uint32_t, mode_t, "%04o");
 BUS_DEFINE_SET_TRANSIENT(unsigned, "u", uint32_t, unsigned, "%" PRIu32);
 
 static inline bool valid_user_group_name_or_id_relaxed(const char *u) {
@@ -39,6 +40,7 @@ static inline bool valid_user_group_name_or_id_relaxed(const char *u) {
 
 BUS_DEFINE_SET_TRANSIENT_STRING_WITH_CHECK(user_relaxed, valid_user_group_name_or_id_relaxed);
 BUS_DEFINE_SET_TRANSIENT_STRING_WITH_CHECK(path, path_is_absolute);
+BUS_DEFINE_SET_TRANSIENT_STRING_WITH_CHECK(reboot_parameter, reboot_parameter_is_valid);
 
 int bus_set_transient_string(
                 Unit *u,

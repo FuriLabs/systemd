@@ -14,6 +14,7 @@
 #include "creds-util.h"
 #include "dissect-image.h"
 #include "env-file.h"
+#include "errno-util.h"
 #include "fd-util.h"
 #include "fileio.h"
 #include "fs-util.h"
@@ -117,6 +118,8 @@ static void print_welcome(void) {
 
         pn = isempty(pretty_name) ? "Linux" : pretty_name;
         ac = isempty(ansi_color) ? "0" : ansi_color;
+
+        (void) reset_terminal_fd(STDIN_FILENO, /* switch_to_text= */ false);
 
         if (colors_enabled())
                 printf("\nWelcome to your new installation of \x1B[%sm%s\x1B[0m!\n", ac, pn);
@@ -655,8 +658,12 @@ static int prompt_root_password(void) {
                 }
 
                 r = quality_check_password(*a, "root", &error);
-                if (r < 0)
-                        return log_error_errno(r, "Failed to check quality of password: %m");
+                if (r < 0) {
+                        if (ERRNO_IS_NOT_SUPPORTED(r))
+                                log_warning("Password quality check is not supported, proceeding anyway.");
+                        else
+                                return log_error_errno(r, "Failed to check password quality: %m");
+                }
                 if (r == 0)
                         log_warning("Password is weak, accepting anyway: %s", error);
 

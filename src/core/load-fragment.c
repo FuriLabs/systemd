@@ -54,6 +54,7 @@
 #include "path-util.h"
 #include "percent-util.h"
 #include "process-util.h"
+#include "reboot-util.h"
 #if HAVE_SECCOMP
 #include "seccomp-util.h"
 #endif
@@ -354,6 +355,40 @@ int config_parse_unit_string_printf(
         r = unit_full_printf(u, rvalue, &k);
         if (r < 0) {
                 log_syntax(unit, LOG_WARNING, filename, line, r, "Failed to resolve unit specifiers in '%s', ignoring: %m", rvalue);
+                return 0;
+        }
+
+        return config_parse_string(unit, filename, line, section, section_line, lvalue, ltype, k, data, userdata);
+}
+
+int config_parse_reboot_parameter(
+                const char *unit,
+                const char *filename,
+                unsigned line,
+                const char *section,
+                unsigned section_line,
+                const char *lvalue,
+                int ltype,
+                const char *rvalue,
+                void *data,
+                void *userdata) {
+
+        _cleanup_free_ char *k = NULL;
+        const Unit *u = ASSERT_PTR(userdata);
+        int r;
+
+        assert(filename);
+        assert(line);
+        assert(rvalue);
+
+        r = unit_full_printf(u, rvalue, &k);
+        if (r < 0) {
+                log_syntax(unit, LOG_WARNING, filename, line, r, "Failed to resolve unit specifiers in '%s', ignoring: %m", rvalue);
+                return 0;
+        }
+
+        if (!reboot_parameter_is_valid(k)) {
+                log_syntax(unit, LOG_WARNING, filename, line, 0, "Invalid reboot parameter '%s', ignoring.", k);
                 return 0;
         }
 
@@ -798,7 +833,7 @@ int config_parse_exec_coredump_filter(
         }
 
         c->coredump_filter |= f;
-        c->oom_score_adjust_set = true;
+        c->coredump_filter_set = true;
         return 0;
 }
 
@@ -3649,7 +3684,7 @@ int config_parse_restrict_filesystems(
 
         if (isempty(rvalue)) {
                 /* Empty assignment resets the list */
-                c->restrict_filesystems = set_free(c->restrict_filesystems);
+                c->restrict_filesystems = set_free_free(c->restrict_filesystems);
                 c->restrict_filesystems_allow_list = false;
                 return 0;
         }
@@ -3787,8 +3822,23 @@ int config_parse_allowed_cpuset(
                 void *userdata) {
 
         CPUSet *c = data;
+        const Unit *u = userdata;
+        _cleanup_free_ char *k = NULL;
+        int r;
 
-        (void) parse_cpu_set_extend(rvalue, c, true, unit, filename, line, lvalue);
+        assert(filename);
+        assert(lvalue);
+        assert(rvalue);
+
+        r = unit_full_printf(u, rvalue, &k);
+        if (r < 0) {
+                log_syntax(unit, LOG_WARNING, filename, line, r,
+                           "Failed to resolve unit specifiers in '%s', ignoring: %m",
+                           rvalue);
+                return 0;
+        }
+
+        (void) parse_cpu_set_extend(k, c, true, unit, filename, line, lvalue);
         return 0;
 }
 
@@ -3932,12 +3982,12 @@ int config_parse_delegate(
                 return 0;
         }
 
-        /* We either accept a boolean value, which may be used to turn on delegation for all controllers, or turn it
-         * off for all. Or it takes a list of controller names, in which case we add the specified controllers to the
-         * mask to delegate. */
+        /* We either accept a boolean value, which may be used to turn on delegation for all controllers, or
+         * turn it off for all. Or it takes a list of controller names, in which case we add the specified
+         * controllers to the mask to delegate. Delegate= enables delegation without any controllers. */
 
         if (isempty(rvalue)) {
-                /* An empty string resets controllers and set Delegate=yes. */
+                /* An empty string resets controllers and sets Delegate=yes. */
                 c->delegate = true;
                 c->delegate_controllers = 0;
                 return 0;
@@ -3975,7 +4025,7 @@ int config_parse_delegate(
 
         } else if (r > 0) {
                 c->delegate = true;
-                c->delegate_controllers = _CGROUP_MASK_ALL;
+                c->delegate_controllers = CGROUP_MASK_DELEGATE;
         } else {
                 c->delegate = false;
                 c->delegate_controllers = 0;
@@ -5924,7 +5974,7 @@ int config_parse_restrict_network_interfaces(
 
         if (isempty(rvalue)) {
                 /* Empty assignment resets the list */
-                c->restrict_network_interfaces = set_free(c->restrict_network_interfaces);
+                c->restrict_network_interfaces = set_free_free(c->restrict_network_interfaces);
                 return 0;
         }
 

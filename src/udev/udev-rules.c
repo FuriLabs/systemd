@@ -1090,9 +1090,7 @@ static int rule_add_line(UdevRules *rules, const char *line_str, unsigned line_n
         if (isempty(line_str))
                 return 0;
 
-        /* We use memdup_suffix0() here, since we want to add a second NUL byte to the end, since possibly
-         * some parsers might turn this into a "nulstr", which requires an extra NUL at the end. */
-        line = memdup_suffix0(line_str, strlen(line_str) + 1);
+        line = strdup(line_str);
         if (!line)
                 return log_oom();
 
@@ -1198,7 +1196,7 @@ int udev_rules_parse_file(UdevRules *rules, const char *filename) {
 
         r = hashmap_put_stats_by_path(&rules->stats_by_path, filename, &st);
         if (r < 0)
-                return log_warning_errno(errno, "Failed to save stat for %s, ignoring: %m", filename);
+                return log_warning_errno(r, "Failed to save stat for %s, ignoring: %m", filename);
 
         (void) fd_warn_permissions(filename, fileno(f));
 
@@ -1612,7 +1610,7 @@ static int udev_rule_apply_token_to_event(
                 const char *val;
 
                 FOREACH_DEVICE_DEVLINK(dev, val)
-                        if (token_match_string(token, strempty(startswith(val, "/dev/"))))
+                        if (token_match_string(token, strempty(startswith(val, "/dev/"))) == (token->op == OP_MATCH))
                                 return token->op == OP_MATCH;
                 return token->op == OP_NOMATCH;
         }
@@ -1641,8 +1639,8 @@ static int udev_rule_apply_token_to_event(
         case TK_M_PARENTS_TAG: {
                 const char *val;
 
-                FOREACH_DEVICE_TAG(dev, val)
-                        if (token_match_string(token, val))
+                FOREACH_DEVICE_CURRENT_TAG(dev, val)
+                        if (token_match_string(token, val) == (token->op == OP_MATCH))
                                 return token->op == OP_MATCH;
                 return token->op == OP_NOMATCH;
         }

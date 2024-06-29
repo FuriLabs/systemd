@@ -476,13 +476,14 @@ static int verb_set(int argc, char *argv[], void *userdata) {
                 /* First, fsync() the directory these files are located in */
                 r = fsync_parent_at(fd, skip_slash(target));
                 if (r < 0)
-                        log_debug_errno(errno, "Failed to synchronize image directory, ignoring: %m");
+                        log_debug_errno(r, "Failed to synchronize image directory, ignoring: %m");
 
                 /* Secondly, syncfs() the whole file system these files are located in */
                 if (syncfs(fd) < 0)
                         log_debug_errno(errno, "Failed to synchronize $BOOT partition, ignoring: %m");
 
                 log_info("Marked boot as '%s'. (Boot attempt counter is at %" PRIu64".)", argv[0], done);
+                return 0;
         }
 
         log_error_errno(SYNTHETIC_ERRNO(EBUSY), "Can't find boot counter source file for '%s': %m", target);

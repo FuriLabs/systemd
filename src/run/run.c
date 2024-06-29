@@ -241,6 +241,9 @@ static int parse_argv(int argc, char *argv[]) {
         assert(argc >= 0);
         assert(argv);
 
+        /* Resetting to 0 forces the invocation of an internal initialization routine of getopt_long()
+         * that checks for GNU extensions in optstring ('-' or '+' at the beginning). */
+        optind = 0;
         while ((c = getopt_long(argc, argv, "+hrH:M:E:p:tPqGdSu:", options, NULL)) >= 0)
 
                 switch (c) {
@@ -633,12 +636,25 @@ static int parse_argv(int argc, char *argv[]) {
 static int transient_unit_set_properties(sd_bus_message *m, UnitType t, char **properties) {
         int r;
 
+        assert(m);
+
         r = sd_bus_message_append(m, "(sv)", "Description", "s", arg_description);
         if (r < 0)
                 return bus_log_create_error(r);
 
         if (arg_aggressive_gc) {
                 r = sd_bus_message_append(m, "(sv)", "CollectMode", "s", "inactive-or-failed");
+                if (r < 0)
+                        return bus_log_create_error(r);
+        }
+
+        r = sd_bus_is_bus_client(sd_bus_message_get_bus(m));
+        if (r < 0)
+                return log_error_errno(r, "Can't determine if bus connection is direct or to broker: %m");
+        if (r > 0) {
+                /* Pin the object as least as long as we are around. Note that AddRef (currently) only works
+                 * if we talk via the bus though. */
+                r = sd_bus_message_append(m, "(sv)", "AddRef", "b", 1);
                 if (r < 0)
                         return bus_log_create_error(r);
         }
@@ -719,12 +735,6 @@ static int transient_service_set_properties(sd_bus_message *m, const char *pty_p
         if (r < 0)
                 return r;
 
-        if (arg_wait || arg_stdio != ARG_STDIO_NONE) {
-                r = sd_bus_message_append(m, "(sv)", "AddRef", "b", 1);
-                if (r < 0)
-                        return bus_log_create_error(r);
-        }
-
         if (arg_remain_after_exit) {
                 r = sd_bus_message_append(m, "(sv)", "RemainAfterExit", "b", arg_remain_after_exit);
                 if (r < 0)
@@ -762,11 +772,17 @@ static int transient_service_set_properties(sd_bus_message *m, const char *pty_p
         }
 
         if (pty_path) {
+                _cleanup_close_ int pty_slave = -EBADF;
+
+                pty_slave = open_terminal(pty_path, O_RDWR|O_NOCTTY|O_CLOEXEC);
+                if (pty_slave < 0)
+                        return pty_slave;
+
                 r = sd_bus_message_append(m,
                                           "(sv)(sv)(sv)(sv)",
-                                          "StandardInput", "s", "tty",
-                                          "StandardOutput", "s", "tty",
-                                          "StandardError", "s", "tty",
+                                          "StandardInputFileDescriptor", "h", pty_slave,
+                                          "StandardOutputFileDescriptor", "h", pty_slave,
+                                          "StandardErrorFileDescriptor", "h", pty_slave,
                                           "TTYPath", "s", pty_path);
                 if (r < 0)
                         return bus_log_create_error(r);
@@ -1017,7 +1033,7 @@ static void run_context_check_done(RunContext *c) {
         else
                 done = true;
 
-        if (c->forward && done) /* If the service is gone, it's time to drain the output */
+        if (c->forward && !pty_forward_is_done(c->forward) && done) /* If the service is gone, it's time to drain the output */
                 done = pty_forward_drain(c->forward);
 
         if (done)
@@ -1085,11 +1101,18 @@ static int on_properties_changed(sd_bus_message *m, void *userdata, sd_bus_error
 }
 
 static int pty_forward_handler(PTYForward *f, int rcode, void *userdata) {
-        RunContext *c = userdata;
+        RunContext *c = ASSERT_PTR(userdata);
 
         assert(f);
 
-        if (rcode < 0) {
+        if (rcode == -ECANCELED) {
+                log_debug_errno(rcode, "PTY forwarder disconnected.");
+                if (!arg_wait)
+                        return sd_event_exit(c->event, EXIT_SUCCESS);
+
+                /* If --wait is specified, we'll only exit the pty forwarding, but will continue to wait
+                 * for the service to end. If the user hits ^C we'll exit too. */
+        } else if (rcode < 0) {
                 sd_event_exit(c->event, EXIT_FAILURE);
                 return log_error_errno(rcode, "Error on PTY forwarding logic: %m");
         }

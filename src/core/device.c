@@ -6,7 +6,7 @@
 #include "sd-messages.h"
 
 #include "alloc-util.h"
-#include "bus-error.h"
+#include "bus-common-errors.h"
 #include "dbus-device.h"
 #include "dbus-unit.h"
 #include "device-private.h"
@@ -612,7 +612,8 @@ static int device_add_udev_wants(Unit *u, sd_device *dev) {
 
                         r = manager_add_job_by_name(u->manager, JOB_START, *i, JOB_FAIL, NULL, &error, NULL);
                         if (r < 0)
-                                log_unit_warning_errno(u, r, "Failed to enqueue SYSTEMD_WANTS= job, ignoring: %s", bus_error_message(&error, r));
+                                log_unit_full_errno(u, sd_bus_error_has_name(&error, BUS_ERROR_NO_SUCH_UNIT) ? LOG_DEBUG : LOG_WARNING, r,
+                                                    "Failed to enqueue %s job, ignoring: %s", property, bus_error_message(&error, r));
                 }
 
         return strv_free_and_replace(d->wants_property, added);
@@ -1021,11 +1022,6 @@ static void device_enumerate(Manager *m) {
                         goto fail;
                 }
 
-                /* This will fail if we are unprivileged, but that
-                 * should not matter much, as user instances won't run
-                 * during boot. */
-                (void) sd_device_monitor_set_receive_buffer_size(m->device_monitor, 128*1024*1024);
-
                 r = sd_device_monitor_filter_add_match_tag(m->device_monitor, "systemd");
                 if (r < 0) {
                         log_error_errno(r, "Failed to add udev tag match: %m");
@@ -1270,6 +1266,7 @@ const UnitVTable device_vtable = {
         .status_message_formats = {
                 .starting_stopping = {
                         [0] = "Expecting device %s...",
+                        [1] = "Waiting for device %s to disappear...",
                 },
                 .finished_start_job = {
                         [JOB_DONE]       = "Found device %s.",

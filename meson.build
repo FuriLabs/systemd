@@ -240,6 +240,7 @@ conf.set_quoted('DOCUMENT_ROOT',                              pkgdatadir / 'gate
 conf.set_quoted('ENVIRONMENT_DIR',                            environmentdir)
 conf.set_quoted('INCLUDE_DIR',                                includedir)
 conf.set_quoted('LIBDIR',                                     libdir)
+conf.set_quoted('KERNEL_INSTALL_DIR',                         kernelinstalldir)
 conf.set_quoted('MODPROBE_DIR',                               modprobedir)
 conf.set_quoted('MODULESLOAD_DIR',                            modulesloaddir)
 conf.set_quoted('PKGSYSCONFDIR',                              pkgsysconfdir)
@@ -308,7 +309,7 @@ conf.set10('MEMORY_ACCOUNTING_DEFAULT',                       memory_accounting_
 conf.set('STATUS_UNIT_FORMAT_DEFAULT',                        'STATUS_UNIT_FORMAT_' + status_unit_format_default.to_upper())
 conf.set_quoted('STATUS_UNIT_FORMAT_DEFAULT_STR',             status_unit_format_default)
 
-conf.set10('FIRST_BOOT_FULL_PRESET',                          get_option('first-boot-full-preset'))
+conf.set10('ENABLE_FIRST_BOOT_FULL_PRESET',                   get_option('first-boot-full-preset'))
 
 conf.set10('EFI_TPM_PCR_COMPAT',                              get_option('efi-tpm-pcr-compat'))
 
@@ -321,7 +322,7 @@ meson_build_sh = find_program('tools/meson-build.sh')
 want_tests = get_option('tests')
 slow_tests = want_tests != 'false' and get_option('slow-tests')
 fuzz_tests = want_tests != 'false' and get_option('fuzz-tests')
-install_tests = get_option('install-tests')
+install_tests = want_tests != 'false' and get_option('install-tests')
 
 if add_languages('cpp', required : fuzzer_build)
         #  Used only for tests
@@ -349,6 +350,7 @@ endif
 basic_disabled_warnings = [
         '-Wno-missing-field-initializers',
         '-Wno-unused-parameter',
+        '-Wno-nonnull-compare',
 ]
 
 possible_common_cc_flags = [
@@ -510,6 +512,7 @@ conf.set('SIZEOF_RLIM_T', cc.sizeof('rlim_t', prefix : '#include <sys/resource.h
 conf.set('SIZEOF_TIMEX_MEMBER', cc.sizeof('typeof(((struct timex *)0)->freq)', prefix : '#include <sys/timex.h>'))
 
 decl_headers = '''
+#include <dirent.h>
 #include <uchar.h>
 #include <sys/mount.h>
 #include <sys/stat.h>
@@ -519,6 +522,7 @@ foreach decl : ['char16_t',
                 'char32_t',
                 'struct mount_attr',
                 'struct statx',
+                'struct dirent64',
                ]
 
         # We get -1 if the size cannot be determined
@@ -742,6 +746,7 @@ foreach header : ['crypt.h',
                   'linux/memfd.h',
                   'linux/vm_sockets.h',
                   'sys/auxv.h',
+                  'threads.h',
                   'valgrind/memcheck.h',
                   'valgrind/valgrind.h',
                   'linux/time_types.h',
@@ -1019,7 +1024,15 @@ threads = dependency('threads')
 librt = cc.find_library('rt')
 libm = cc.find_library('m')
 libdl = cc.find_library('dl')
-libcrypt = cc.find_library('crypt')
+libcrypt = dependency('libcrypt', required : false)
+if not libcrypt.found()
+        libcrypt = dependency('libxcrypt', required : false)
+endif
+if not libcrypt.found()
+        # fallback to use find_library() if libcrypt is provided by glibc, e.g. for LibreELEC.
+        libcrypt = cc.find_library('crypt')
+endif
+libcap = dependency('libcap')
 
 # On some architectures, libatomic is required. But on some installations,
 # it is found, but actual linking fails. So let's try to use it opportunistically.
@@ -1042,12 +1055,6 @@ foreach ident : [
                                dependencies : libcrypt)
         conf.set10('HAVE_' + ident[0].to_upper(), have)
 endforeach
-
-libcap = dependency('libcap', required : false)
-if not libcap.found()
-        # Compat with Ubuntu 14.04 which ships libcap w/o .pc file
-        libcap = cc.find_library('cap')
-endif
 
 want_bpf_framework = get_option('bpf-framework')
 bpf_compiler = get_option('bpf-compiler')
@@ -1230,7 +1237,7 @@ conf.set10('ENABLE_POLKIT', install_polkit)
 
 want_acl = get_option('acl')
 if want_acl != 'false' and not skip_deps
-        libacl = cc.find_library('acl', required : want_acl == 'true')
+        libacl = dependency('libacl', required : want_acl == 'true')
         have = libacl.found()
 else
         have = false
@@ -1275,8 +1282,15 @@ conf.set10('HAVE_KMOD', have)
 
 want_pam = get_option('pam')
 if want_pam != 'false' and not skip_deps
-        libpam = cc.find_library('pam', required : want_pam == 'true')
-        libpam_misc = cc.find_library('pam_misc', required : want_pam == 'true')
+        libpam = dependency('pam', required : false)
+        if not libpam.found()
+                # Debian older than bookworm and Ubuntu older than 22.10 do not provide the .pc file.
+                libpam = cc.find_library('pam', required : want_pam == 'true')
+        endif
+        libpam_misc = dependency('pam_misc', required : false)
+        if not libpam_misc.found()
+                libpam_misc = cc.find_library('pam_misc', required : want_pam == 'true')
+        endif
         have = libpam.found() and libpam_misc.found()
 else
         have = false
@@ -1402,8 +1416,12 @@ conf.set10('HAVE_QRENCODE', have)
 
 want_gcrypt = get_option('gcrypt')
 if want_gcrypt != 'false' and not skip_deps
-        libgcrypt = cc.find_library('gcrypt', required : want_gcrypt == 'true')
-        libgpg_error = cc.find_library('gpg-error', required : want_gcrypt == 'true')
+        libgcrypt = dependency('libgcrypt', required : want_gcrypt == 'true')
+        libgpg_error = dependency('gpg-error', required : false)
+        if not libgpg_error.found()
+                # CentOS 8 does not provide the .pc file.
+                libgpg_error = cc.find_library('gpg-error', required : want_gcrypt == 'true')
+        endif
         have = libgcrypt.found() and libgpg_error.found()
 else
         have = false
@@ -1511,8 +1529,11 @@ conf.set10('HAVE_ZLIB', have)
 
 want_bzip2 = get_option('bzip2')
 if want_bzip2 != 'false' and not skip_deps
-        libbzip2 = cc.find_library('bz2',
-                                   required : want_bzip2 == 'true')
+        libbzip2 = dependency('bzip2', required : false)
+        if not libbzip2.found()
+                # Debian and Ubuntu do not provide the .pc file.
+                libbzip2 = cc.find_library('bz2', required : want_bzip2 == 'true')
+        endif
         have = libbzip2.found()
 else
         have = false

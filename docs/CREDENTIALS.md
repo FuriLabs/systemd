@@ -75,7 +75,7 @@ Within unit files, there are four settings to configure service credentials.
 2. `SetCredential=` may be used to set a credential to a literal string encoded
    in the unit file. Because unit files are world-readable (both on disk and
    via D-Bus), this should only be used for credentials that aren't sensitive,
-   i.e. public keys/certificates – but not private keys.
+   e.g. public keys or certificates, but not private keys.
 
 3. `LoadCredentialEncrypted=` is similar to `LoadCredential=` but will load an
    encrypted credential, and decrypt it before passing it to the service. For
@@ -396,12 +396,17 @@ qemu-system-x86_64 \
         -drive if=none,id=hd,file=test.raw,format=raw \
         -device virtio-scsi-pci,id=scsi \
         -device scsi-hd,drive=hd,bootindex=1 \
-        -smbios type=11,value=io.systemd.credential.binary:tmpfiles.extra=$(echo "f~ /root/.ssh/authorized_keys 700 root root - $(ssh-add -L | base64 -w 0)" | base64 -w 0)
+        -smbios type=11,value=io.systemd.credential.binary:tmpfiles.extra=$(echo "f~ /root/.ssh/authorized_keys 600 root root - $(ssh-add -L | base64 -w 0)" | base64 -w 0)
 ```
 ## Relevant Paths
 
 From *service* perspective the runtime path to find loaded credentials in is
-provided in the `$CREDENTIALS_DIRECTORY` environment variable.
+provided in the `$CREDENTIALS_DIRECTORY` environment variable. For *system
+services* the credential directory will be `/run/credentials/<unit name>`, but
+hardcoding this path is discouraged, because it does not work for *user
+services*. Packagers and system administrators may hardcode the credential path
+as a last resort for software that does not yet search for credentials relative
+to `$CREDENTIALS_DIRECTORY`.
 
 At runtime, credentials passed to the *system* are placed in
 `/run/credentials/@system/` (for regular credentials, such as those passed from

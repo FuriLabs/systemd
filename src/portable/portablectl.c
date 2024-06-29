@@ -90,12 +90,14 @@ static int determine_image(const char *image, bool permit_non_existing, char **r
         return 0;
 }
 
-static int attach_extensions_to_message(sd_bus_message *m, char **extensions) {
+static int attach_extensions_to_message(sd_bus_message *m, const char *method, char **extensions) {
         int r;
 
         assert(m);
+        assert(method);
 
-        if (strv_isempty(extensions))
+        /* The new methods also have flags parameters that are independent of the extensions */
+        if (strv_isempty(extensions) && !endswith(method, "WithExtensions"))
                 return 0;
 
         r = sd_bus_message_open_container(m, 'a', "s");
@@ -105,7 +107,10 @@ static int attach_extensions_to_message(sd_bus_message *m, char **extensions) {
         STRV_FOREACH(p, extensions) {
                 _cleanup_free_ char *resolved_extension_image = NULL;
 
-                r = determine_image(*p, false, &resolved_extension_image);
+                r = determine_image(
+                                *p,
+                                startswith(method, "Get") || startswith(method, "Detach"),
+                                &resolved_extension_image);
                 if (r < 0)
                         return r;
 
@@ -267,7 +272,7 @@ static int get_image_metadata(sd_bus *bus, const char *image, char **matches, sd
         assert(bus);
         assert(reply);
 
-        method = strv_isempty(arg_extension_images) ? "GetImageMetadata" : "GetImageMetadataWithExtensions";
+        method = strv_isempty(arg_extension_images) && !arg_force ? "GetImageMetadata" : "GetImageMetadataWithExtensions";
 
         r = bus_message_new_method_call(bus, &m, bus_portable_mgr, method);
         if (r < 0)
@@ -277,7 +282,7 @@ static int get_image_metadata(sd_bus *bus, const char *image, char **matches, sd
         if (r < 0)
                 return bus_log_create_error(r);
 
-        r = attach_extensions_to_message(m, arg_extension_images);
+        r = attach_extensions_to_message(m, method, arg_extension_images);
         if (r < 0)
                 return r;
 
@@ -285,7 +290,7 @@ static int get_image_metadata(sd_bus *bus, const char *image, char **matches, sd
         if (r < 0)
                 return bus_log_create_error(r);
 
-        if (!strv_isempty(arg_extension_images)) {
+        if (streq(method, "GetImageMetadataWithExtensions")) {
                 r = sd_bus_message_append(m, "t", flags);
                 if (r < 0)
                         return bus_log_create_error(r);
@@ -775,8 +780,9 @@ static int maybe_stop_disable(sd_bus *bus, char *image, char *argv[]) {
         if (r < 0)
                 return bus_log_parse_error(r);
 
-        /* If we specified any extensions, we'll first an array of extension-release metadata. */
-        if (!strv_isempty(arg_extension_images)) {
+        /* If we specified any extensions or --force (which makes the request go through the new
+         * WithExtensions calls), we'll first get an array of extension-release metadata. */
+        if (!strv_isempty(arg_extension_images) || arg_force) {
                 r = sd_bus_message_skip(reply, "a{say}");
                 if (r < 0)
                         return bus_log_parse_error(r);
@@ -856,7 +862,7 @@ static int attach_reattach_image(int argc, char *argv[], const char *method) {
         if (r < 0)
                 return bus_log_create_error(r);
 
-        r = attach_extensions_to_message(m, arg_extension_images);
+        r = attach_extensions_to_message(m, method, arg_extension_images);
         if (r < 0)
                 return r;
 
@@ -897,11 +903,11 @@ static int attach_reattach_image(int argc, char *argv[], const char *method) {
 }
 
 static int attach_image(int argc, char *argv[], void *userdata) {
-        return attach_reattach_image(argc, argv, strv_isempty(arg_extension_images) ? "AttachImage" : "AttachImageWithExtensions");
+        return attach_reattach_image(argc, argv, strv_isempty(arg_extension_images) && !arg_force ? "AttachImage" : "AttachImageWithExtensions");
 }
 
 static int reattach_image(int argc, char *argv[], void *userdata) {
-        return attach_reattach_image(argc, argv, strv_isempty(arg_extension_images) ? "ReattachImage" : "ReattachImageWithExtensions");
+        return attach_reattach_image(argc, argv, strv_isempty(arg_extension_images) && !arg_force ? "ReattachImage" : "ReattachImageWithExtensions");
 }
 
 static int detach_image(int argc, char *argv[], void *userdata) {
@@ -924,7 +930,7 @@ static int detach_image(int argc, char *argv[], void *userdata) {
 
         (void) maybe_stop_disable(bus, image, argv);
 
-        method = strv_isempty(arg_extension_images) ? "DetachImage" : "DetachImageWithExtensions";
+        method = strv_isempty(arg_extension_images) && !arg_force ? "DetachImage" : "DetachImageWithExtensions";
 
         r = bus_message_new_method_call(bus, &m, bus_portable_mgr, method);
         if (r < 0)
@@ -934,11 +940,11 @@ static int detach_image(int argc, char *argv[], void *userdata) {
         if (r < 0)
                 return bus_log_create_error(r);
 
-        r = attach_extensions_to_message(m, arg_extension_images);
+        r = attach_extensions_to_message(m, method, arg_extension_images);
         if (r < 0)
                 return r;
 
-        if (strv_isempty(arg_extension_images))
+        if (streq(method, "DetachImage"))
                 r = sd_bus_message_append(m, "b", arg_runtime);
         else {
                 uint64_t flags = (arg_runtime ? PORTABLE_RUNTIME : 0) | (arg_force ? PORTABLE_FORCE_ATTACH | PORTABLE_FORCE_SYSEXT : 0);
@@ -1146,12 +1152,12 @@ static int is_image_attached(int argc, char *argv[], void *userdata) {
         if (r < 0)
                 return bus_log_create_error(r);
 
-        r = attach_extensions_to_message(m, arg_extension_images);
+        r = attach_extensions_to_message(m, method, arg_extension_images);
         if (r < 0)
                 return r;
 
         if (!strv_isempty(arg_extension_images)) {
-                r = sd_bus_message_append(m, "t", 0);
+                r = sd_bus_message_append(m, "t", UINT64_C(0));
                 if (r < 0)
                         return bus_log_create_error(r);
         }

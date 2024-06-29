@@ -1270,7 +1270,7 @@ static int message_push_fd(sd_bus_message *m, int fd) {
         if (copy < 0)
                 return -errno;
 
-        f = reallocarray(m->fds, sizeof(int), m->n_fds + 1);
+        f = reallocarray(m->fds, m->n_fds + 1, sizeof(int));
         if (!f) {
                 m->poisoned = true;
                 safe_close(copy);
@@ -1324,10 +1324,19 @@ int message_append_basic(sd_bus_message *m, char type, const void *p, const void
                  * into the empty string */
                 p = strempty(p);
 
-                _fallthrough_;
+                if (!utf8_is_valid(p))
+                        return -EINVAL;
+
+                align = 4;
+                sz = 4 + strlen(p) + 1;
+                break;
+
         case SD_BUS_TYPE_OBJECT_PATH:
 
                 if (!p)
+                        return -EINVAL;
+
+                if (!object_path_is_valid(p))
                         return -EINVAL;
 
                 align = 4;
@@ -1337,6 +1346,9 @@ int message_append_basic(sd_bus_message *m, char type, const void *p, const void
         case SD_BUS_TYPE_SIGNATURE:
 
                 p = strempty(p);
+
+                if (!signature_is_valid(p, /* allow_dict_entry = */ true))
+                        return -EINVAL;
 
                 align = 1;
                 sz = 1 + strlen(p) + 1;
@@ -1997,6 +2009,8 @@ _public_ int sd_bus_message_appendv(
                         r = signature_element_length(t, &k);
                         if (r < 0)
                                 return r;
+                        if (k < 2)
+                                return -ERANGE;
 
                         {
                                 char s[k - 1];
@@ -3440,6 +3454,8 @@ _public_ int sd_bus_message_readv(
                         r = signature_element_length(t, &k);
                         if (r < 0)
                                 return r;
+                        if (k < 2)
+                                return -ERANGE;
 
                         {
                                 char s[k - 1];
@@ -3620,6 +3636,8 @@ _public_ int sd_bus_message_skip(sd_bus_message *m, const char *types) {
                 r = signature_element_length(types, &k);
                 if (r < 0)
                         return r;
+                if (k < 2)
+                        return -ERANGE;
 
                 {
                         char s[k-1];

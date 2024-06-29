@@ -1325,7 +1325,7 @@ static int trigger_device(Manager *m, sd_device *d) {
         return 0;
 }
 
-static int attach_device(Manager *m, const char *seat, const char *sysfs) {
+static int attach_device(Manager *m, const char *seat, const char *sysfs, sd_bus_error *error) {
         _cleanup_(sd_device_unrefp) sd_device *d = NULL;
         _cleanup_free_ char *rule = NULL, *file = NULL;
         const char *id_for_seat;
@@ -1337,13 +1337,13 @@ static int attach_device(Manager *m, const char *seat, const char *sysfs) {
 
         r = sd_device_new_from_syspath(&d, sysfs);
         if (r < 0)
-                return r;
+                return sd_bus_error_set_errnof(error, r, "Failed to open device '%s': %m", sysfs);
 
         if (sd_device_has_current_tag(d, "seat") <= 0)
-                return -ENODEV;
+                return sd_bus_error_set_errnof(error, ENODEV, "Device '%s' lacks 'seat' udev tag.", sysfs);
 
         if (sd_device_get_property_value(d, "ID_FOR_SEAT", &id_for_seat) < 0)
-                return -ENODEV;
+                return sd_bus_error_set_errnof(error, ENODEV, "Device '%s' lacks 'ID_FOR_SEAT' udev property.", sysfs);
 
         if (asprintf(&file, "/etc/udev/rules.d/72-seat-%s.rules", id_for_seat) < 0)
                 return -ENOMEM;
@@ -1428,7 +1428,7 @@ static int method_attach_device(sd_bus_message *message, void *userdata, sd_bus_
         if (r == 0)
                 return 1; /* No authorization for now, but the async polkit stuff will call us again when it has it */
 
-        r = attach_device(m, seat, sysfs);
+        r = attach_device(m, seat, sysfs, error);
         if (r < 0)
                 return r;
 
@@ -2143,7 +2143,6 @@ static void reset_scheduled_shutdown(Manager *m) {
         m->scheduled_shutdown_timeout = USEC_INFINITY;
         m->scheduled_shutdown_uid = UID_INVALID;
         m->scheduled_shutdown_tty = mfree(m->scheduled_shutdown_tty);
-        m->wall_message = mfree(m->wall_message);
         m->shutdown_dry_run = false;
 
         if (m->unlink_nologin) {
@@ -2537,6 +2536,9 @@ static int method_set_reboot_parameter(
         r = sd_bus_message_read(message, "s", &arg);
         if (r < 0)
                 return r;
+
+        if (!reboot_parameter_is_valid(arg))
+                return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS, "Invalid reboot parameter '%s'.", arg);
 
         r = detect_container();
         if (r < 0)

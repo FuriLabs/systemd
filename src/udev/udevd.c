@@ -55,6 +55,7 @@
 #include "pretty-print.h"
 #include "proc-cmdline.h"
 #include "process-util.h"
+#include "rlimit-util.h"
 #include "selinux-util.h"
 #include "signal-util.h"
 #include "socket-util.h"
@@ -794,7 +795,7 @@ static int worker_spawn(Manager *manager, Event *event) {
         if (r < 0)
                 return log_error_errno(r, "Worker: Failed to enable receiving of device: %m");
 
-        r = safe_fork(NULL, FORK_DEATHSIG, &pid);
+        r = safe_fork("(udev-worker)", FORK_DEATHSIG, &pid);
         if (r < 0) {
                 event->state = EVENT_QUEUED;
                 return log_error_errno(r, "Failed to fork() worker: %m");
@@ -2039,6 +2040,9 @@ int run_udevd(int argc, char *argv[]) {
         r = mac_selinux_init();
         if (r < 0)
                 return r;
+
+        /* Make sure we can have plenty fds (for example for pidfds) */
+        (void) rlimit_nofile_bump(-1);
 
         r = RET_NERRNO(mkdir("/run/udev", 0755));
         if (r < 0 && r != -EEXIST)

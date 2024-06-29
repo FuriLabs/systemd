@@ -533,7 +533,7 @@ static int append_extensions(
 
                 *((*p)++) = (MountEntry) {
                         .path_malloc = TAKE_PTR(mount_point),
-                        .source_const = TAKE_PTR(source),
+                        .source_malloc = TAKE_PTR(source),
                         .mode = EXTENSION_DIRECTORIES,
                         .ignore = ignore_enoent,
                         .has_prefix = true,
@@ -1756,11 +1756,18 @@ static int create_symlinks_from_tuples(const char *root, char **strv_symlinks) {
 
                 r = mkdir_parents_label(dst_abs, 0755);
                 if (r < 0)
-                        return r;
+                        return log_debug_errno(
+                                        r,
+                                        "Failed to create parent directory for symlink '%s': %m",
+                                        dst_abs);
 
                 r = symlink_idempotent(src_abs, dst_abs, true);
                 if (r < 0)
-                        return r;
+                        return log_debug_errno(
+                                        r,
+                                        "Failed to create symlink from '%s' to '%s': %m",
+                                        src_abs,
+                                        dst_abs);
         }
 
         return 0;

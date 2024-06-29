@@ -31,7 +31,9 @@ TEST(parse_sec) {
         assert_se(u == 700 * USEC_PER_MSEC);
         assert_se(parse_sec("23us", &u) >= 0);
         assert_se(u == 23);
-        assert_se(parse_sec("23µs", &u) >= 0);
+        assert_se(parse_sec("23μs", &u) >= 0); /* greek small letter mu */
+        assert_se(u == 23);
+        assert_se(parse_sec("23µs", &u) >= 0); /* micro symbol */
         assert_se(u == 23);
         assert_se(parse_sec("infinity", &u) >= 0);
         assert_se(u == USEC_INFINITY);
@@ -240,7 +242,7 @@ TEST(format_timespan) {
         test_format_timespan_accuracy(USEC_PER_SEC);
 
         /* See issue #23928. */
-        _cleanup_free_ char *buf;
+        _cleanup_free_ char *buf = NULL;
         assert_se(buf = new(char, 5));
         assert_se(buf == format_timespan(buf, 5, 100005, 1000));
 }
@@ -614,6 +616,9 @@ TEST(map_clock_usec) {
 }
 
 static int intro(void) {
+        /* Tests have hard-coded results that do not expect a specific timezone to be set by the caller */
+        assert_se(unsetenv("TZ") >= 0);
+
         log_info("realtime=" USEC_FMT "\n"
                  "monotonic=" USEC_FMT "\n"
                  "boottime=" USEC_FMT "\n",

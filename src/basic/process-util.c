@@ -34,6 +34,7 @@
 #include "memory-util.h"
 #include "missing_sched.h"
 #include "missing_syscall.h"
+#include "missing_threads.h"
 #include "namespace-util.h"
 #include "path-util.h"
 #include "process-util.h"
@@ -368,6 +369,10 @@ int rename_process(const char name[]) {
                 strncpy(program_invocation_name, name, k);
                 if (l > k)
                         truncated = true;
+
+               /* Also update the short name. */
+                char *p = strrchr(program_invocation_name, '/');
+                program_invocation_short_name = p ? p + 1 : program_invocation_name;
         }
 
         /* Third step, completely replace the argv[] array the kernel maintains for us. This requires privileges, but
@@ -1265,7 +1270,7 @@ int safe_fork_full(
         else
                 pid = fork();
         if (pid < 0)
-                return log_full_errno(prio, errno, "Failed to fork: %m");
+                return log_full_errno(prio, errno, "Failed to fork off '%s': %m", strna(name));
         if (pid > 0) {
                 /* We are in the parent process */
 
@@ -1301,6 +1306,7 @@ int safe_fork_full(
                 /* Close the logs if requested, before we log anything. And make sure we reopen it if needed. */
                 log_close();
                 log_set_open_when_needed(true);
+                log_settle_target();
         }
 
         if (name) {

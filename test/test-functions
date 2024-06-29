@@ -70,21 +70,14 @@ _at_exit() {
     # Run the EXIT handlers in reverse order
     for ((i = ${#_AT_EXIT_HANDLERS[@]} - 1; i >= 0; i--)); do
         ddebug "Running EXIT handler '${_AT_EXIT_HANDLERS[$i]}'"
-        "${_AT_EXIT_HANDLERS[$i]}"
+        eval "${_AT_EXIT_HANDLERS[$i]}"
     done
 }
 
 trap _at_exit EXIT
 
 add_at_exit_handler() {
-    local handler="${1?}"
-
-    if [[ "$(type -t "$handler")" != "function" ]]; then
-        dfatal "'$handler' is not a function"
-        exit 1
-    fi
-
-    _AT_EXIT_HANDLERS+=("$handler")
+    _AT_EXIT_HANDLERS+=("${1:?}")
 }
 
 # Decide if we can (and want to) run qemu with KVM acceleration.
@@ -190,6 +183,7 @@ BASICTOOLS=(
     lz4cat
     mkfifo
     mktemp
+    modinfo
     modprobe
     mount
     mountpoint
@@ -206,6 +200,7 @@ BASICTOOLS=(
     seq
     setfattr
     setfont
+    setpriv
     setsid
     sfdisk
     sh
@@ -229,6 +224,7 @@ BASICTOOLS=(
     useradd
     userdel
     wc
+    whoami
     xargs
     xzcat
 )
@@ -290,8 +286,7 @@ IS_BUILT_WITH_COVERAGE=$(is_built_with_coverage && echo yes || echo no)
 
 if get_bool "$IS_BUILT_WITH_ASAN"; then
     STRIP_BINARIES=no
-    SKIP_INITRD="${SKIP_INITRD:-yes}"
-    PATH_TO_INIT=$ROOTLIBDIR/systemd-under-asan
+    PATH_TO_INIT="$ROOTLIBDIR/systemd-under-asan"
     QEMU_MEM="${QEMU_MEM:-2G}"
     QEMU_SMP="${QEMU_SMP:-4}"
 
@@ -322,6 +317,17 @@ if get_bool "$IS_BUILT_WITH_ASAN"; then
     echo "Detected ASan RT '$ASAN_RT_NAME' located at '$ASAN_RT_PATH'"
 fi
 
+test_require_bin() {
+    local bin
+
+    for bin in "$@"; do
+        if ! command -v "$bin" >/dev/null; then
+            echo "Required binary $bin not available, skipping the test"
+            exit 0
+        fi
+    done
+}
+
 find_qemu_bin() {
     QEMU_BIN="${QEMU_BIN:-""}"
     # SUSE and Red Hat call the binary qemu-kvm. Debian and Gentoo call it kvm.
@@ -351,6 +357,53 @@ find_qemu_bin() {
         echo "Could not find a suitable qemu binary" >&2
         return 1
     fi
+}
+
+qemu_setup_swtpm_socket() {
+    local pid state_dir tpm_device
+
+    if ! tpm_device="$(qemu_get_tpm_device)"; then
+        dinfo "Found QEMU version is too old for TPM2 on ppc64le"
+        exit 0
+    fi
+
+    state_dir="$(mktemp -d)"
+    swtpm socket --tpm2 --tpmstate dir="$state_dir" --ctrl type=unixio,path="$state_dir/sock" &
+    pid=$!
+    if ! kill -0 "$pid"; then
+        derror "Failed to start swtpm"
+        return 1
+    fi
+
+    if ! timeout 5 bash -c "until [[ -S $state_dir/sock ]]; do sleep .5; done"; then
+        derror "Failed to setup swtpm socket"
+        return 1
+    fi
+
+    dinfo "Started swtpm as PID $pid with state dir $state_dir"
+
+    add_at_exit_handler "kill -TERM $pid 2>/dev/null; rm -rf '$state_dir'"
+
+    QEMU_OPTIONS+=" -chardev socket,id=chrtpm,path=$state_dir/sock -tpmdev emulator,id=tpm0,chardev=chrtpm -device $tpm_device,tpmdev=tpm0"
+    dinfo "Configured emulated TPM2 device $tpm_device"
+
+    return 0
+}
+
+qemu_get_tpm_device() {
+    local tpm_device="tpm-tis"
+
+    if [[ "$(uname -m)" == "ppc64le" ]]; then
+        # tpm-spapr support was introduced in qemu 5.0.0
+        if ! qemu_min_version "5.0.0"; then
+            return 1
+        fi
+
+        tpm_device="tpm-spapr"
+    fi
+
+    echo "$tpm_device"
+    return 0
 }
 
 # Compares argument #1=X.Y.Z (X&Y&Z = numeric) to the version of the installed qemu
@@ -443,6 +496,10 @@ run_qemu() {
 
     find_qemu_bin || return 1
 
+    if get_bool "${TEST_SETUP_SWTPM:-}"; then
+        qemu_setup_swtpm_socket || return 1
+    fi
+
     # Umount initdir to avoid concurrent access to the filesystem
     _umount_dir "$initdir"
 
@@ -482,7 +539,6 @@ run_qemu() {
         kernel_params+=(
             "oops=panic"
             "panic=1"
-            "softlockup_panic=1"
             "systemd.wants=end.service"
         )
     fi
@@ -510,7 +566,7 @@ run_qemu() {
         kernel_params+=("${user_kernel_append[@]}")
     fi
 
-    if [[ "$INITRD" ]] && ! get_bool "$SKIP_INITRD"; then
+    if [[ -n "$INITRD" ]]; then
         qemu_options+=(-initrd "$INITRD")
     fi
 
@@ -781,7 +837,7 @@ setup_selinux() {
     fi
 
     local conf_dir=/etc/selinux
-    local fixfiles_tools=(bash uname cat sort uniq awk grep egrep head expr find rm secon setfiles)
+    local fixfiles_tools=(awk bash cat chcon expr find grep head secon setfiles rm sort uname uniq)
 
     # Make sure the following statement can't expand to "/" to prevent
     # a potential where-are-my-backups situation
@@ -790,6 +846,16 @@ setup_selinux() {
         dfatal "Failed to copy $conf_dir"
         exit 1
     fi
+
+    # We use a custom autorelabel service instead of the SELinux provided set
+    # of units & a generator, since the generator overrides the default target
+    # to the SELinux one when it detects /.autorelabel. However, we use
+    # systemd.unit= on the kernel command cmdline which always takes precedence,
+    # rendering all SELinux efforts useless. Also, pulling in selinux-autorelabel.service
+    # explicitly doesn't work either, as it doesn't check for the presence of /.autorelabel
+    # and does the relabeling unconditionally which always ends with a reboot, so
+    # we end up in a reboot loop (and it also spews quite a lot of errors as it
+    # wants /etc/fstab and dracut-initramfs-restore).
 
     touch "$initdir/.autorelabel"
     mkdir -p "$initdir/usr/lib/systemd/tests/testdata/units/basic.target.wants"
@@ -834,88 +900,104 @@ EOF
 }
 
 create_asan_wrapper() {
-    local asan_wrapper="$initdir/$ROOTLIBDIR/systemd-under-asan"
-    dinfo "Create ASan wrapper as '$asan_wrapper'"
+    local asan_wrapper default_asan_options default_ubsan_options default_environment manager_environment
 
     [[ -z "$ASAN_RT_PATH" ]] && dfatal "ASAN_RT_PATH is empty, but it shouldn't be"
 
-    # clang: install llvm-symbolizer to generate useful reports
-    # See: https://clang.llvm.org/docs/AddressSanitizer.html#symbolizing-the-reports
-    [[ "$ASAN_COMPILER" == "clang" ]] && image_install "llvm-symbolizer"
+    default_asan_options="${ASAN_OPTIONS:-strict_string_checks=1:detect_stack_use_after_return=1:check_initialization_order=1:strict_init_order=1}"
+    default_ubsan_options="${UBSAN_OPTIONS:-print_stacktrace=1:print_summary=1:halt_on_error=1}"
 
-    cat >"$asan_wrapper" <<EOF
-#!/usr/bin/env bash
+    if [[ "$ASAN_COMPILER" == "clang" ]]; then
+        # clang: install llvm-symbolizer to generate useful reports
+        # See: https://clang.llvm.org/docs/AddressSanitizer.html#symbolizing-the-reports
+        image_install "llvm-symbolizer"
 
-set -x
+        # Let's add the ASan DSO's path to the dynamic linker's cache. This is pretty
+        # unnecessary for gcc & libasan, however, for clang this is crucial, as its
+        # runtime ASan DSO is in a non-standard (library) path.
+        mkdir -p "${initdir:?}/etc/ld.so.conf.d/"
+        echo "${ASAN_RT_PATH%/*}" >"${initdir:?}/etc/ld.so.conf.d/asan-path-override.conf"
+        ldconfig -r "$initdir"
+    fi
 
-echo "ASan RT: $ASAN_RT_PATH"
-if [[ ! -e "$ASAN_RT_PATH" ]]; then
-    echo >&2 "Couldn't find ASan RT at '$ASAN_RT_PATH', can't continue"
-    exit 1
-fi
-
-DEFAULT_ASAN_OPTIONS=${ASAN_OPTIONS:-strict_string_checks=1:detect_stack_use_after_return=1:check_initialization_order=1:strict_init_order=1}
-DEFAULT_UBSAN_OPTIONS=${UBSAN_OPTIONS:-print_stacktrace=1:print_summary=1:halt_on_error=1}
-DEFAULT_ENVIRONMENT="ASAN_OPTIONS=\$DEFAULT_ASAN_OPTIONS UBSAN_OPTIONS=\$DEFAULT_UBSAN_OPTIONS"
-
-# Create a simple environment file which can be included by systemd services
-# that need it (i.e. services that utilize DynamicUser=true and bash, etc.)
-cat >/usr/lib/systemd/systemd-asan-env <<INNER_EOF
+    # Create a simple environment file which can be included by systemd services
+    # that need it (i.e. services that utilize DynamicUser=true and bash, etc.)
+    cat >"${initdir:?}/usr/lib/systemd/systemd-asan-env" <<EOF
 LD_PRELOAD=$ASAN_RT_PATH
-ASAN_OPTIONS=$DEFAULT_ASAN_OPTIONS
+ASAN_OPTIONS=$default_asan_options
 LSAN_OPTIONS=detect_leaks=0
-UBSAN_OPTIONS=$DEFAULT_UBSAN_OPTIONS
-INNER_EOF
+UBSAN_OPTIONS=$default_ubsan_options
+EOF
 
-# As right now bash is the PID 1, we can't expect PATH to have a sane value.
-# Let's make one to prevent unexpected "<bin> not found" issues in the future
-export PATH="/sbin:/bin:/usr/sbin:/usr/bin"
+    default_environment=(
+        "ASAN_OPTIONS='$default_asan_options'"
+        "UBSAN_OPTIONS='$default_ubsan_options'"
+        "ASAN_RT_PATH='$ASAN_RT_PATH'"
+    )
+    manager_environment=(
+        "ASAN_OPTIONS='$default_asan_options:log_path=/systemd-pid1.asan.log:log_to_syslog=1'"
+        "UBSAN_OPTIONS='$default_ubsan_options:log_path=/systemd-pid1.ubsan.log:log_to_syslog=1'"
+        "ASAN_RT_PATH='$ASAN_RT_PATH'"
+    )
 
-mount -t proc proc /proc
-mount -t sysfs sysfs /sys
-mount -o remount,rw /
+    mkdir -p "${initdir:?}/etc/systemd/system.conf.d/"
+    cat >"${initdir:?}/etc/systemd/system.conf.d/asan.conf" <<EOF
+[Manager]
+DefaultEnvironment=${default_environment[*]}
+ManagerEnvironment=${manager_environment[*]}
+DefaultTimeoutStartSec=180s
+DefaultStandardOutput=journal+console
+EOF
 
-DEFAULT_ENVIRONMENT="\$DEFAULT_ENVIRONMENT ASAN_RT_PATH=$ASAN_RT_PATH"
+    # ASAN and syscall filters aren't compatible with each other.
+    find "${initdir:?}" -name '*.service' -type f -print0 | xargs -0 sed -i 's/^\(MemoryDeny\|SystemCall\)/#\1/'
 
-if [[ "$ASAN_COMPILER" == "clang" ]]; then
-  # Let's add the ASan DSO's path to the dynamic linker's cache. This is pretty
-  # unnecessary for gcc & libasan, however, for clang this is crucial, as its
-  # runtime ASan DSO is in a non-standard (library) path.
-  echo "${ASAN_RT_PATH%/*}" >/etc/ld.so.conf.d/asan-path-override.conf
-  ldconfig
-fi
-echo DefaultEnvironment=\$DEFAULT_ENVIRONMENT >>/etc/systemd/system.conf
-echo DefaultTimeoutStartSec=180s >>/etc/systemd/system.conf
-echo DefaultStandardOutput=journal+console >>/etc/systemd/system.conf
-
-# ASAN and syscall filters aren't compatible with each other.
-find / -name '*.service' -type f | xargs sed -i 's/^\\(MemoryDeny\\|SystemCall\\)/#\\1/'
-
+    mkdir -p "${initdir:?}/etc/systemd/system/systemd-journald.service.d/"
+    cat >"${initdir:?}/etc/systemd/system/systemd-journald.service.d/asan-env.conf" <<EOF
+[Service]
 # The redirection of ASAN reports to a file prevents them from ending up in /dev/null.
 # But, apparently, sometimes it doesn't work: https://github.com/google/sanitizers/issues/886.
-JOURNALD_CONF_DIR=/etc/systemd/system/systemd-journald.service.d
-mkdir -p "\$JOURNALD_CONF_DIR"
-printf "[Service]\nEnvironment=ASAN_OPTIONS=\$DEFAULT_ASAN_OPTIONS:log_path=/systemd-journald.asan.log UBSAN_OPTIONS=\$DEFAULT_UBSAN_OPTIONS:log_path=/systemd-journald.ubsan.log\n" >"\$JOURNALD_CONF_DIR/env.conf"
+Environment=ASAN_OPTIONS=$default_asan_options:log_path=/systemd-journald.asan.log UBSAN_OPTIONS=$default_ubsan_options:log_path=/systemd-journald.ubsan.log
 
 # Sometimes UBSan sends its reports to stderr regardless of what is specified in log_path
 # Let's try to catch them by redirecting stderr (and stdout just in case) to a file
 # See https://github.com/systemd/systemd/pull/12524#issuecomment-491108821
-printf "[Service]\nStandardOutput=file:/systemd-journald.out\n" >"\$JOURNALD_CONF_DIR/out.conf"
-
-# 90s isn't enough for some services to finish when literally everything is run
-# under ASan+UBSan in containers, which, in turn, are run in VMs.
-# Let's limit which environments such services should be executed in.
-mkdir -p /etc/systemd/system/systemd-hwdb-update.service.d
-printf "[Unit]\nConditionVirtualization=container\n\n[Service]\nTimeoutSec=240s\n" >/etc/systemd/system/systemd-hwdb-update.service.d/env-override.conf
-
-# Let's override another hard-coded timeout that kicks in too early
-mkdir -p /etc/systemd/system/systemd-journal-flush.service.d
-printf "[Service]\nTimeoutSec=180s\n" >/etc/systemd/system/systemd-journal-flush.service.d/timeout.conf
-
-export ASAN_OPTIONS=\$DEFAULT_ASAN_OPTIONS:log_path=/systemd.asan.log UBSAN_OPTIONS=\$DEFAULT_UBSAN_OPTIONS
-exec "$ROOTLIBDIR/systemd" "\$@"
+StandardOutput=file:/systemd-journald.out
 EOF
 
+    # 90s isn't enough for some services to finish when literally everything is run
+    # under ASan+UBSan in containers, which, in turn, are run in VMs.
+    # Let's limit which environments such services should be executed in.
+    mkdir -p "${initdir:?}/etc/systemd/system/systemd-hwdb-update.service.d/"
+    cat >"${initdir:?}/etc/systemd/system/systemd-hwdb-update.service.d/asan.conf" <<EOF
+[Unit]
+ConditionVirtualization=container
+
+[Service]
+TimeoutSec=240s
+EOF
+
+    # Let's override another hard-coded timeout that kicks in too early
+    mkdir -p "${initdir:?}/etc/systemd/system/systemd-journal-flush.service.d/"
+    cat >"${initdir:?}/etc/systemd/system/systemd-journal-flush.service.d/asan.conf" <<EOF
+[Service]
+TimeoutSec=180s
+EOF
+
+    asan_wrapper="${initdir:?}/${PATH_TO_INIT:?}"
+    # Sanity check to make sure we don't overwrite something we shouldn't.
+    [[ "$asan_wrapper" =~ systemd-under-asan$ ]]
+
+    cat >"$asan_wrapper" <<EOF
+#!/usr/bin/env bash
+set -eux
+
+export PATH="/sbin:/bin:/usr/sbin:/usr/bin"
+export ${manager_environment[@]}
+[[ -n "\$ASAN_OPTIONS" && -n "\$UBSAN_OPTIONS" ]]
+
+exec "$ROOTLIBDIR/systemd" "\$@"
+EOF
     chmod 0755 "$asan_wrapper"
 }
 
@@ -955,6 +1037,7 @@ install_modules() {
 
     if get_bool "$LOOKS_LIKE_SUSE"; then
         instmods ext4
+        instmods af_packet
     fi
 }
 
@@ -980,7 +1063,9 @@ install_multipath() {
     image_install kpartx /lib/udev/kpartx_id lsmod mpathpersist multipath multipathd partx
     image_install "${ROOTLIBDIR:?}"/system/multipathd.{service,socket}
     if get_bool "$LOOKS_LIKE_DEBIAN"; then
-        inst_rules 56-dm-parts.rules 56-dm-mpath.rules 60-multipath.rules 68-del-part-nodes.rules 95-kpartx.rules
+        # Note: try both 60-kpartx.rules (as seen on Debian Sid with 0.9.4-7) and 90-kpartx.rules (as seen on
+        # Ubuntu Jammy with 0.8.8-1ubuntu1.22.04.4)
+        inst_rules 56-dm-parts.rules 56-dm-mpath.rules 60-kpartx.rules 60-multipath.rules 68-del-part-nodes.rules 90-kpartx.rules
     else
         inst_rules 11-dm-mpath.rules 11-dm-parts.rules 62-multipath.rules 66-kpartx.rules 68-del-part-nodes.rules
     fi
@@ -996,28 +1081,41 @@ install_multipath() {
 }
 
 install_lvm() {
+    local lvm_rules rule_prefix
+
     image_install lvm
     image_install "${ROOTLIBDIR:?}"/system/lvm2-lvmpolld.{service,socket}
     image_install "${ROOTLIBDIR:?}"/system/{blk-availability,lvm2-monitor}.service
     image_install -o "/lib/tmpfiles.d/lvm2.conf"
+
     if get_bool "$LOOKS_LIKE_DEBIAN"; then
-        inst_rules 56-lvm.rules 69-lvm-metad.rules
+        lvm_rules="56-lvm.rules"
+        rule_prefix=""
     else
-        # Support the new udev autoactivation introduced in lvm 2.03.14
-        # https://sourceware.org/git/?p=lvm2.git;a=commit;h=67722b312390cdab29c076c912e14bd739c5c0f6
-        # Static autoactivation (via lvm2-activation-generator) was dropped
-        # in lvm 2.03.15
-        # https://sourceware.org/git/?p=lvm2.git;a=commit;h=ee8fb0310c53ed003a43b324c99cdfd891dd1a7c
-        if [[ -f /lib/udev/rules.d/69-dm-lvm.rules ]]; then
-            inst_rules 11-dm-lvm.rules 69-dm-lvm.rules
-        else
-            image_install "${ROOTLIBDIR:?}"/system-generators/lvm2-activation-generator
-            image_install "${ROOTLIBDIR:?}"/system/lvm2-pvscan@.service
-            inst_rules 11-dm-lvm.rules 69-dm-lvm-metad.rules
-        fi
+        lvm_rules="11-dm-lvm.rules"
+        rule_prefix="dm-"
     fi
+
+    # Support the new udev autoactivation introduced in lvm 2.03.14
+    # https://sourceware.org/git/?p=lvm2.git;a=commit;h=67722b312390cdab29c076c912e14bd739c5c0f6
+    # Static autoactivation (via lvm2-activation-generator) was dropped
+    # in lvm 2.03.15
+    # https://sourceware.org/git/?p=lvm2.git;a=commit;h=ee8fb0310c53ed003a43b324c99cdfd891dd1a7c
+    if [[ -f "/lib/udev/rules.d/69-${rule_prefix}lvm.rules" ]]; then
+        inst_rules "$lvm_rules" "69-${rule_prefix}lvm.rules"
+    else
+        image_install "${ROOTLIBDIR:?}"/system-generators/lvm2-activation-generator
+        image_install "${ROOTLIBDIR:?}"/system/lvm2-pvscan@.service
+        inst_rules "$lvm_rules" "69-${rule_prefix}lvm-metad.rules"
+    fi
+
     mkdir -p "${initdir:?}/etc/lvm"
 }
+
+host_has_btrfs() (
+    set -e
+    modprobe -nv btrfs && command -v mkfs.btrfs && command -v btrfs || return $?
+)
 
 install_btrfs() {
     instmods btrfs
@@ -1086,6 +1184,11 @@ install_iscsi() {
     fi
 }
 
+host_has_mdadm() (
+    set -e
+    command -v mdadm || return $?
+)
+
 install_mdadm() {
     local unit
     local mdadm_units=(
@@ -1099,6 +1202,7 @@ install_mdadm() {
         system-shutdown/mdadm.shutdown
     )
 
+    instmods "=md"
     image_install mdadm mdmon
     inst_rules 01-md-raid-creating.rules 63-md-raid-arrays.rules 64-md-raid-assembly.rules 69-md-clustered-confirm-device.rules
     # Fedora/CentOS/RHEL ships this rule file
@@ -1107,6 +1211,10 @@ install_mdadm() {
     for unit in "${mdadm_units[@]}"; do
         image_install "${ROOTLIBDIR:?}/$unit"
     done
+
+    # Disable the mdmonitor service, since it fails if there's no valid email address
+    # configured in /etc/mdadm.conf, which just unnecessarily pollutes the logs
+    "${SYSTEMCTL:?}" mask --root "${initdir:?}" mdmonitor.service || :
 }
 
 install_compiled_systemd() {
@@ -1141,7 +1249,7 @@ install_debian_systemd() {
         ddebug "Install debian files from package $deb"
         for file in $files; do
             [ -e "$file" ] || continue
-            [ -d "$file" ] && continue
+            [ ! -L "$file" ] && [ -d "$file" ] && continue
             inst "$file"
         done
     done < <(grep -E '^Package:' "${SOURCE_DIR}/debian/control" | cut -d ':' -f 2)
@@ -1151,13 +1259,18 @@ install_suse_systemd() {
     local testsdir=/usr/lib/systemd/tests
     local pkgs
 
+    dinfo "Install basic filesystem structure"
+    install_rpm filesystem
+
     dinfo "Install SUSE systemd"
 
     pkgs=(
         systemd
+        systemd-boot
         systemd-container
         systemd-coredump
         systemd-experimental
+        systemd-homed
         systemd-journal-remote
         systemd-portable
         udev
@@ -1169,7 +1282,7 @@ install_suse_systemd() {
         ddebug "Install files from package $p"
         while read -r f; do
             [ -e "$f" ] || continue
-            [ -d "$f" ] && continue
+            [ ! -L "$f" ] && [ -d "$f" ] && continue
             inst "$f"
         done < <(rpm -ql "$p")
     done
@@ -1228,11 +1341,14 @@ install_systemd() {
         mkdir -p "$initdir/etc/systemd/system/service.d/"
         echo -e "[Service]\nProtectSystem=no\nProtectHome=no\n" >"$initdir/etc/systemd/system/service.d/99-gcov-override.conf"
         # Similarly, set ReadWritePaths= to the $BUILD_DIR in the test image
-        # to make the coverage work with units utilizing DynamicUser=yes. Do
-        # this only for services from TEST-20, as setting this system-wide
-        # has many undesirable side-effects
-        mkdir -p "$initdir/etc/systemd/system/test20-.service.d/"
-        echo -e "[Service]\nReadWritePaths=${BUILD_DIR:?}\n" >"$initdir/etc/systemd/system/test20-.service.d/99-gcov-rwpaths-override.conf"
+        # to make the coverage work with units using DynamicUser=yes. Do this
+        # only for services with test- prefix, as setting this system-wide
+        # has many undesirable side-effects, as it creates its own namespace.
+        mkdir -p "$initdir/etc/systemd/system/test-.service.d/"
+        echo -e "[Service]\nReadWritePaths=${BUILD_DIR:?}\n" >"$initdir/etc/systemd/system/test-.service.d/99-gcov-rwpaths-override.conf"
+        # Ditto, but for the user daemon
+        mkdir -p "$initdir/etc/systemd/user/test-.service.d/"
+        echo -e "[Service]\nReadWritePaths=${BUILD_DIR:?}\n" >"$initdir/etc/systemd/user/test-.service.d/99-gcov-rwpaths-override.conf"
     fi
 
     # If we're built with -Dportabled=false, tests with systemd-analyze
@@ -1323,7 +1439,7 @@ cleanup_loopdev() {
 add_at_exit_handler cleanup_loopdev
 
 create_empty_image() {
-    if [ -z "${IMAGE_NAME:=}" ]; then
+    if [[ -z "${IMAGE_NAME:=}" ]]; then
         echo "create_empty_image: \$IMAGE_NAME not set"
         exit 1
     fi
@@ -1333,13 +1449,13 @@ create_empty_image() {
     local data_size=50
     if ! get_bool "$NO_BUILD"; then
         if meson configure "${BUILD_DIR:?}" | grep 'static-lib\|standalone-binaries' | awk '{ print $2 }' | grep -q 'true'; then
-            root_size=$((root_size+=200))
+            root_size=$((root_size + 200))
         fi
         if meson configure "${BUILD_DIR:?}" | grep 'link-.*-shared' | awk '{ print $2 }' | grep -q 'false'; then
-            root_size=$((root_size+=200))
+            root_size=$((root_size + 200))
         fi
         if get_bool "$IS_BUILT_WITH_COVERAGE"; then
-            root_size=$((root_size+=250))
+            root_size=$((root_size + 250))
         fi
     fi
     if ! get_bool "$STRIP_BINARIES"; then
@@ -1353,8 +1469,8 @@ create_empty_image() {
     # Create the blank file to use as a root filesystem
     truncate -s "${root_size}M" "$IMAGE_PUBLIC"
 
-    LOOPDEV=$(losetup --show -P -f "$IMAGE_PUBLIC")
-    [ -b "$LOOPDEV" ] || return 1
+    LOOPDEV="$(losetup --show -P -f "$IMAGE_PUBLIC")"
+    [[ -b "$LOOPDEV" ]] || return 1
     # Create two partitions - a root one and a data one (utilized by some tests)
     sfdisk "$LOOPDEV" <<EOF
 label: gpt
@@ -1413,6 +1529,7 @@ create_empty_image_rootdir() {
 check_asan_reports() {
     local ret=0
     local root="${1:?}"
+    local log report
 
     if get_bool "$IS_BUILT_WITH_ASAN"; then
         ls -l "$root"
@@ -1421,12 +1538,15 @@ check_asan_reports() {
             ret=$((ret+1))
         fi
 
-        journald_report="$(find "$root" -name "systemd-journald.*san.log*" -exec cat {} \;)"
-        if [[ -n "$journald_report" ]]; then
-            printf "%s\n" "$journald_report"
-            cat "$root/systemd-journald.out" || :
-            ret=$((ret+1))
-        fi
+        for log in pid1 journald; do
+            report="$(find "$root" -name "systemd-$log.*san.log*" -exec cat {} \;)"
+            if [[ -n "$report" ]]; then
+                printf "%s\n" "$report"
+                # shellcheck disable=SC2015
+                [[ "$log" == journald ]] && cat "$root/systemd-journald.out" || :
+                ret=$((ret+1))
+            fi
+        done
 
         pids="$(
             "$JOURNALCTL" -D "$root/var/log/journal" | perl -alne '
@@ -1601,8 +1721,7 @@ check_result_nspawn() {
         fi
     fi
 
-    check_result_common "${workspace}"
-    ret=$?
+    check_result_common "${workspace}" && ret=0 || ret=$?
 
     _umount_dir "${initdir:?}"
 
@@ -1622,8 +1741,7 @@ check_result_qemu() {
         fi
     fi
 
-    check_result_common "${initdir:?}"
-    ret=$?
+    check_result_common "${initdir:?}" && ret=0 || ret=$?
 
     _umount_dir "${initdir:?}"
 
@@ -1881,14 +1999,14 @@ install_dbus() {
     # Newer Fedora versions use dbus-broker by default. Let's install it if it's available.
     if [ -f "$ROOTLIBDIR/system/dbus-broker.service" ]; then
         inst "$ROOTLIBDIR/system/dbus-broker.service"
-        inst_symlink /etc/systemd/system/dbus.service
         inst /usr/bin/dbus-broker
         inst /usr/bin/dbus-broker-launch
+        image_install -o {/etc,/usr/lib}/systemd/system/dbus.service
     elif [ -f "$ROOTLIBDIR/system/dbus-daemon.service" ]; then
         # Fedora rawhide replaced dbus.service with dbus-daemon.service
         inst "$ROOTLIBDIR/system/dbus-daemon.service"
         # Alias symlink
-        inst_symlink /etc/systemd/system/dbus.service
+        image_install -o {/etc,/usr/lib}/systemd/system/dbus.service
     else
         inst "$ROOTLIBDIR/system/dbus.service"
     fi
@@ -1917,12 +2035,12 @@ EOF
 <!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-BUS Bus Configuration 1.0//EN"
         "https://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
 <busconfig>
-    <limit name="service_start_timeout">60000</limit>
+    <limit name="service_start_timeout">120000</limit>
 </busconfig>
 EOF
         # Bump the client-side timeout in sd-bus as well
         mkdir -p "$initdir/etc/systemd/system.conf.d"
-        echo -e '[Manager]\nDefaultEnvironment=SYSTEMD_BUS_TIMEOUT=60' >"$initdir/etc/systemd/system.conf.d/bus-timeout.conf"
+        echo -e '[Manager]\nDefaultEnvironment=SYSTEMD_BUS_TIMEOUT=120' >"$initdir/etc/systemd/system.conf.d/bus-timeout.conf"
     fi
 }
 
@@ -1947,12 +2065,12 @@ EOF
     # Newer Fedora versions use dbus-broker by default. Let's install it if it's available.
     if [ -f "$userunitdir/dbus-broker.service" ]; then
         inst "$userunitdir/dbus-broker.service"
-        inst_symlink /etc/systemd/user/dbus.service
+        image_install -o {/etc,/usr/lib}/systemd/user/dbus.service
     elif [ -f "${ROOTLIBDIR:?}/system/dbus-daemon.service" ]; then
         # Fedora rawhide replaced dbus.service with dbus-daemon.service
         inst "$userunitdir/dbus-daemon.service"
         # Alias symlink
-        inst_symlink /etc/systemd/user/dbus.service
+        image_install -o {/etc,/usr/lib}/systemd/user/dbus.service
     else
         inst "$userunitdir/dbus.service"
     fi
@@ -2086,7 +2204,7 @@ install_zoneinfo() {
     inst_any /usr/share/zoneinfo/Australia/Sydney
     inst_any /usr/share/zoneinfo/Europe/Berlin
     inst_any /usr/share/zoneinfo/Europe/Dublin
-    inst_any /usr/share/zoneinfo/Europe/Kiev
+    inst_any /usr/share/zoneinfo/Europe/Kyiv
     inst_any /usr/share/zoneinfo/Pacific/Auckland
     inst_any /usr/share/zoneinfo/Pacific/Honolulu
     inst_any /usr/share/zoneinfo/CET
@@ -2097,8 +2215,8 @@ install_zoneinfo() {
 install_fonts() {
     dinfo "Install system fonts"
     for i in \
-        /usr/lib/kbd/consolefonts/eurlatgr* \
-        /usr/lib/kbd/consolefonts/latarcyrheb-sun16*; do
+        /usr/{lib,share}/kbd/consolefonts/eurlatgr* \
+        /usr/{lib,share}/kbd/consolefonts/latarcyrheb-sun16*; do
             [[ -f "$i" ]] || continue
             inst "$i"
     done
@@ -2479,7 +2597,7 @@ inst_simple() {
         inst "${src%/*}/.${src##*/}.hmac" "${target%/*}/.${target##*/}.hmac"
     fi
     ddebug "Installing $src"
-    cp --sparse=always -pfL "$src" "${initdir}/$target"
+    cp --sparse=always --force --dereference --preserve=all "$src" "${initdir}/$target"
 }
 
 # find symlinks linked to given library file
@@ -2583,6 +2701,7 @@ inst_binary() {
     # DSOs provided by systemd
     local systemd_so_regex='/(libudev|libsystemd.*|.+[\-_]systemd([\-_].+)?|libnss_(mymachines|myhostname|resolve)).so'
     local wrap_binary=0
+    local enable_lsan=0
     # I love bash!
     while read -r line; do
         [[ "$line" = 'not a dynamic executable' ]] && break
@@ -2615,12 +2734,23 @@ inst_binary() {
 
     # Same as above, but we need to wrap certain libraries unconditionally
     #
-    # chown, getent, login, su, useradd, userdel - dlopen()s (not only) systemd's PAM modules
-    # ls, stat - pulls in nss_systemd with certain options (like ls -l) when
-    #            nsswitch.conf uses [SUCCESS=merge] (like on Arch Linux)
+    # chown, getent, login, su, useradd, userdel - dlopen() (not only) systemd's PAM modules
+    # ls, mkfs.*, mksquashfs, mkswap, setpriv, stat
+    #       - pull in nss_systemd with certain options (like ls -l) when
+    #         nsswitch.conf uses [SUCCESS=merge] (like on Arch Linux)
+    # delv, dig - pull in nss_resolve if `resolve` is in nsswitch.conf
     # tar - called by machinectl in TEST-25
-    if get_bool "$IS_BUILT_WITH_ASAN" && [[ "$bin" =~ /(chown|getent|login|ls|stat|su|tar|useradd|userdel)$ ]]; then
+    bin_rx='/(agetty|chown|curl|delv|dig|getfacl|getent|login|ls|mkfs\.[a-z0-9]+|mksquashfs|mkswap|setpriv|stat|su|tar|useradd|userdel)$'
+    if get_bool "$IS_BUILT_WITH_ASAN" && [[ "$bin" =~ $bin_rx ]]; then
         wrap_binary=1
+        # Ugh, so we want to disable LSan in most cases for the wrapped binaries, since
+        # we don't care about memory leaks in such binaries. However, in certain cases
+        # the external binary is the only interface for the systemd code, like for
+        # the systemd NSS modules, where we want to detect memory leaks. So let's
+        # do another check to decide if we want to enable LSan for given binary.
+        if [[ "$bin" =~ /getent$ ]]; then
+            enable_lsan=1
+        fi
     fi
 
     # If the target binary is built with ASan support, we don't need to wrap
@@ -2638,7 +2768,7 @@ inst_binary() {
 export LD_PRELOAD="$ASAN_RT_PATH"
 # Disable LSan to speed things up, since we don't care about leak reports
 # from 'external' binaries
-export ASAN_OPTIONS=detect_leaks=0
+export ASAN_OPTIONS=detect_leaks=$enable_lsan
 # Set argv[0] to the original binary name without the ".orig" suffix
 exec -a "\$0" -- "${target}.orig" "\$@"
 EOF
@@ -3027,9 +3157,10 @@ test_create_image() {
 }
 
 test_setup() {
-    if get_bool "${TEST_REQUIRE_INSTALL_TESTS:?}" && \
-            command -v meson >/dev/null && \
-            [[ "$(meson configure "${BUILD_DIR:?}" | grep install-tests | awk '{ print $2 }')" != "true" ]]; then
+    if ! get_bool "$NO_BUILD" && \
+         get_bool "${TEST_REQUIRE_INSTALL_TESTS:?}" && \
+         command -v meson >/dev/null && \
+         [[ "$(meson configure "${BUILD_DIR:?}" | grep install-tests | awk '{ print $2 }')" != "true" ]]; then
         dfatal "$BUILD_DIR needs to be built with -Dinstall-tests=true"
         exit 1
     fi
@@ -3209,7 +3340,8 @@ do_test() {
                 fi
                 test_cleanup
                 if [ $ret -eq 0 ]; then
-                    rm "$TESTLOG"
+                    # $TESTLOG is in $STATEDIR, so clean it up only on success
+                    [[ -n "$STATEDIR" ]] && rm -vfr "$STATEDIR"
                     echo "[OK]"
                 else
                     echo "[FAILED]"

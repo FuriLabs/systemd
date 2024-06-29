@@ -1228,7 +1228,13 @@ node /org/freedesktop/systemd1 {
       and terminate all units that aren't dependencies of it. If <literal>ignore-dependencies</literal>, it
       will start a unit but ignore all its dependencies. If <literal>ignore-requirements</literal>, it will
       start a unit but only ignore the requirement dependencies. It is not recommended to make use of the
-      latter two options. On completion, this method returns the newly created job object.</para>
+      latter two options. On reply, if successful, this method returns the newly created job object
+      which has been enqueued for asynchronous activation. Callers that want to track the outcome of the
+      actual start operation need to monitor the result of this job. This can be achieved in a race-free
+      manner by first subscribing to the <function>JobRemoved()</function> signal, then calling
+      <function>StartUnit()</function> and using the returned job object to filter out unrelated
+      <function>JobRemoved()</function> signals, until the desired one is received, which will then carry
+      the result of the start operation.</para>
 
       <para><function>StartUnitReplace()</function> is similar to <function>StartUnit()</function> but
       replaces a job that is queued for one unit by a job for another unit.</para>
@@ -1287,7 +1293,7 @@ node /org/freedesktop/systemd1 {
       <para><function>ResetFailed()</function> resets the "failed" state of all units.</para>
 
       <para><function>ListUnits()</function> returns an array of all currently loaded units. Note that
-      units may be known by multiple names at the same name, and hence there might be more unit names loaded
+      units may be known by multiple names at the same time, and hence there might be more unit names loaded
       than actual units behind them. The array consists of structures with the following elements:
       <itemizedlist>
         <listitem><para>The primary unit name as string</para></listitem>
@@ -1357,7 +1363,8 @@ node /org/freedesktop/systemd1 {
       <function>DumpByFileDescriptor()</function>/<function>DumpUnitsMatchingPatternsByFileDescriptor()</function>
       are usually the preferred interface, since it ensures the data can be passed reliably from the service
       manager to the client. Note though that they cannot work when communicating with the service manager
-      remotely, as file descriptors are strictly local to a system.</para>
+      remotely, as file descriptors are strictly local to a system. All the <function>Dump*()</function>
+      methods are rate limited for unprivileged users.</para>
 
       <para><function>Reload()</function> may be invoked to reload all unit files.</para>
 
@@ -1721,7 +1728,9 @@ node /org/freedesktop/systemd1 {
       <function>UnsetAndSetEnvironment()</function>) require
       <interfacename>org.freedesktop.systemd1.set-environment</interfacename>. <function>Reload()</function>
       and <function>Reexecute()</function> require
-      <interfacename>org.freedesktop.systemd1.reload-daemon</interfacename>.
+      <interfacename>org.freedesktop.systemd1.reload-daemon</interfacename>. Operations which dump internal
+      state require <interfacename>org.freedesktop.systemd1.bypass-dump-ratelimit</interfacename> to avoid
+      rate limits.
       </para>
     </refsect2>
   </refsect1>
@@ -2405,10 +2414,6 @@ node /org/freedesktop/systemd1/unit/avahi_2ddaemon_2eservice {
       <varname>DefaultDependencies</varname>, <varname>OnFailureIsolate</varname>,
       <varname>IgnoreOnIsolate</varname>, <varname>IgnoreOnSnapshot</varname> map directly to the
       corresponding configuration booleans in the unit file.</para>
-
-      <para><varname>DefaultControlGroup</varname> contains the main control group of this unit as a
-      string. This refers to a group in systemd's own <literal>name=systemd</literal> hierarchy, which
-      systemd uses to watch and manipulate the unit and all its processes.</para>
 
       <para><varname>NeedDaemonReload</varname> is a boolean that indicates whether the configuration file
       this unit is loaded from (i.e. <varname>FragmentPath</varname> or <varname>SourcePath</varname>) has

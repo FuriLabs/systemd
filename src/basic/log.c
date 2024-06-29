@@ -23,6 +23,7 @@
 #include "log.h"
 #include "macro.h"
 #include "missing_syscall.h"
+#include "missing_threads.h"
 #include "parse-util.h"
 #include "proc-cmdline.h"
 #include "process-util.h"
@@ -47,6 +48,7 @@ static int log_max_level = LOG_INFO;
 static int log_facility = LOG_DAEMON;
 
 static int console_fd = STDERR_FILENO;
+static int console_fd_is_tty = -1; /* tri-state: -1 means don't know */
 static int syslog_fd = -1;
 static int kmsg_fd = -1;
 static int journal_fd = -1;
@@ -82,13 +84,16 @@ bool _log_message_dummy = false; /* Always false */
         } while (false)
 
 static void log_close_console(void) {
-        console_fd = safe_close_above_stdio(console_fd);
+        /* See comment in log_close_journal() */
+        (void) safe_close_above_stdio(TAKE_FD(console_fd));
+        console_fd_is_tty = -1;
 }
 
 static int log_open_console(void) {
 
         if (!always_reopen_console) {
                 console_fd = STDERR_FILENO;
+                console_fd_is_tty = -1;
                 return 0;
         }
 
@@ -100,13 +105,15 @@ static int log_open_console(void) {
                         return fd;
 
                 console_fd = fd_move_above_stdio(fd);
+                console_fd_is_tty = true;
         }
 
         return 0;
 }
 
 static void log_close_kmsg(void) {
-        kmsg_fd = safe_close(kmsg_fd);
+        /* See comment in log_close_journal() */
+        (void) safe_close(TAKE_FD(kmsg_fd));
 }
 
 static int log_open_kmsg(void) {
@@ -123,7 +130,8 @@ static int log_open_kmsg(void) {
 }
 
 static void log_close_syslog(void) {
-        syslog_fd = safe_close(syslog_fd);
+        /* See comment in log_close_journal() */
+        (void) safe_close(TAKE_FD(syslog_fd));
 }
 
 static int create_log_socket(int type) {
@@ -188,7 +196,11 @@ fail:
 }
 
 static void log_close_journal(void) {
-        journal_fd = safe_close(journal_fd);
+        /* If the journal FD is bad, safe_close will fail, and will try to log, which will fail, so we'll
+         * try to close the journal FD, which is bad, so safe_close will fail... Whether we can close it
+         * or not, invalidate it immediately so that we don't get in a recursive loop until we run out of
+         * stack. */
+        (void) safe_close(TAKE_FD(journal_fd));
 }
 
 static int log_open_journal(void) {
@@ -345,6 +357,7 @@ void log_forget_fds(void) {
         /* Do not call from library code. */
 
         console_fd = kmsg_fd = syslog_fd = journal_fd = -1;
+        console_fd_is_tty = -1;
 }
 
 void log_set_max_level(int level) {
@@ -355,6 +368,16 @@ void log_set_max_level(int level) {
 
 void log_set_facility(int facility) {
         log_facility = facility;
+}
+
+static bool check_console_fd_is_tty(void) {
+        if (console_fd < 0)
+                return false;
+
+        if (console_fd_is_tty < 0)
+                console_fd_is_tty = isatty(console_fd) > 0;
+
+        return console_fd_is_tty;
 }
 
 static int write_to_console(
@@ -411,7 +434,12 @@ static int write_to_console(
         iovec[n++] = IOVEC_MAKE_STRING(buffer);
         if (off)
                 iovec[n++] = IOVEC_MAKE_STRING(off);
-        iovec[n++] = IOVEC_MAKE_STRING("\n");
+
+        /* When writing to a TTY we output an extra '\r' (i.e. CR) first, to generate CRNL rather than just
+         * NL. This is a robustness thing in case the TTY is currently in raw mode (specifically: has the
+         * ONLCR flag off). We want that subsequent output definitely starts at the beginning of the line
+         * again, after all. If the TTY is not in raw mode the extra CR should not hurt. */
+        iovec[n++] = IOVEC_MAKE_STRING((check_console_fd_is_tty() ? "\r\n" : "\n"));
 
         if (writev(console_fd, iovec, n) < 0) {
 
@@ -1197,6 +1225,24 @@ void log_parse_environment(void) {
 
 LogTarget log_get_target(void) {
         return log_target;
+}
+
+void log_settle_target(void) {
+
+        /* If we're using LOG_TARGET_AUTO and opening the log again on every single log call, we'll check if
+         * stderr is attached to the journal every single log call. However, if we then close all file
+         * descriptors later, that will stop working because stderr will be closed as well. To avoid that
+         * problem, this function is used to permanently change the log target depending on whether stderr is
+         * connected to the journal or not. */
+
+        LogTarget t = log_get_target();
+
+        if (t != LOG_TARGET_AUTO)
+                return;
+
+        t = getpid_cached() == 1 || stderr_is_journal() ? (prohibit_ipc ? LOG_TARGET_KMSG : LOG_TARGET_JOURNAL_OR_KMSG)
+                                                        : LOG_TARGET_CONSOLE;
+        log_set_target(t);
 }
 
 int log_get_max_level(void) {

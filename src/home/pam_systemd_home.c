@@ -91,6 +91,7 @@ static int parse_env(
 static int acquire_user_record(
                 pam_handle_t *handle,
                 const char *username,
+                bool debug,
                 UserRecord **ret_record) {
 
         _cleanup_(sd_bus_message_unrefp) sd_bus_message *reply = NULL;
@@ -140,19 +141,21 @@ static int acquire_user_record(
                 _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
                 _cleanup_free_ char *generic_field = NULL, *json_copy = NULL;
 
-                r = pam_acquire_bus_connection(handle, &bus);
+                r = pam_acquire_bus_connection(handle, "pam-systemd-home", &bus);
                 if (r != PAM_SUCCESS)
                         return r;
 
                 r = bus_call_method(bus, bus_home_mgr, "GetUserRecordByName", &error, &reply, "s", username);
                 if (r < 0) {
                         if (bus_error_is_unknown_service(&error)) {
-                                pam_syslog(handle, LOG_DEBUG, "systemd-homed is not available: %s", bus_error_message(&error, r));
+                                if (debug)
+                                        pam_syslog(handle, LOG_DEBUG, "systemd-homed is not available: %s", bus_error_message(&error, r));
                                 goto user_unknown;
                         }
 
                         if (sd_bus_error_has_name(&error, BUS_ERROR_NO_SUCH_HOME)) {
-                                pam_syslog(handle, LOG_DEBUG, "Not a user managed by systemd-homed: %s", bus_error_message(&error, r));
+                                if (debug)
+                                        pam_syslog(handle, LOG_DEBUG, "Not a user managed by systemd-homed: %s", bus_error_message(&error, r));
                                 goto user_unknown;
                         }
 
@@ -264,7 +267,8 @@ static int handle_generic_user_record_error(
                 const char *user_name,
                 UserRecord *secret,
                 int ret,
-                const sd_bus_error *error) {
+                const sd_bus_error *error,
+                bool debug) {
 
         assert(user_name);
         assert(error);
@@ -300,9 +304,11 @@ static int handle_generic_user_record_error(
                 if (r != PAM_SUCCESS)
                         return PAM_CONV_ERR; /* no logging here */
 
-                if (isempty(newp))
-                        return pam_syslog_pam_error(handle, LOG_DEBUG, PAM_AUTHTOK_ERR,
-                                                    "Password request aborted.");
+                if (isempty(newp)) {
+                        if (debug)
+                                pam_syslog(handle, LOG_DEBUG, "Password request aborted.");
+                        return PAM_AUTHTOK_ERR;
+                }
 
                 r = user_record_set_password(secret, STRV_MAKE(newp), true);
                 if (r < 0)
@@ -324,9 +330,11 @@ static int handle_generic_user_record_error(
                 if (r != PAM_SUCCESS)
                         return PAM_CONV_ERR; /* no logging here */
 
-                if (isempty(newp))
-                        return pam_syslog_pam_error(handle, LOG_DEBUG, PAM_AUTHTOK_ERR,
-                                                    "Recovery key request aborted.");
+                if (isempty(newp)) {
+                        if (debug)
+                                pam_syslog(handle, LOG_DEBUG, "Recovery key request aborted.");
+                        return PAM_AUTHTOK_ERR;
+                }
 
                 r = user_record_set_password(secret, STRV_MAKE(newp), true);
                 if (r < 0)
@@ -347,9 +355,11 @@ static int handle_generic_user_record_error(
                 if (r != PAM_SUCCESS)
                         return PAM_CONV_ERR; /* no logging here */
 
-                if (isempty(newp))
-                        return pam_syslog_pam_error(handle, LOG_DEBUG, PAM_AUTHTOK_ERR,
-                                                    "Password request aborted.");
+                if (isempty(newp)) {
+                        if (debug)
+                                pam_syslog(handle, LOG_DEBUG, "Password request aborted.");
+                        return PAM_AUTHTOK_ERR;
+                }
 
 
                 r = user_record_set_password(secret, STRV_MAKE(newp), true);
@@ -365,8 +375,11 @@ static int handle_generic_user_record_error(
                 if (r != PAM_SUCCESS)
                         return PAM_CONV_ERR; /* no logging here */
 
-                if (isempty(newp))
-                        return pam_syslog_pam_error(handle, LOG_DEBUG, PAM_AUTHTOK_ERR, "PIN request aborted.");
+                if (isempty(newp)) {
+                        if (debug)
+                                pam_syslog(handle, LOG_DEBUG, "PIN request aborted.");
+                        return PAM_AUTHTOK_ERR;
+                }
 
                 r = user_record_set_token_pin(secret, STRV_MAKE(newp), false);
                 if (r < 0)
@@ -420,8 +433,11 @@ static int handle_generic_user_record_error(
                 if (r != PAM_SUCCESS)
                         return PAM_CONV_ERR; /* no logging here */
 
-                if (isempty(newp))
-                        return pam_syslog_pam_error(handle, LOG_DEBUG, PAM_AUTHTOK_ERR, "PIN request aborted.");
+                if (isempty(newp)) {
+                        if (debug)
+                                pam_syslog(handle, LOG_DEBUG, "PIN request aborted.");
+                        return PAM_AUTHTOK_ERR;
+                }
 
                 r = user_record_set_token_pin(secret, STRV_MAKE(newp), false);
                 if (r < 0)
@@ -437,8 +453,11 @@ static int handle_generic_user_record_error(
                 if (r != PAM_SUCCESS)
                         return PAM_CONV_ERR; /* no logging here */
 
-                if (isempty(newp))
-                        return pam_syslog_pam_error(handle, LOG_DEBUG, PAM_AUTHTOK_ERR, "PIN request aborted.");
+                if (isempty(newp)) {
+                        if (debug)
+                                pam_syslog(handle, LOG_DEBUG, "PIN request aborted.");
+                        return PAM_AUTHTOK_ERR;
+                }
 
                 r = user_record_set_token_pin(secret, STRV_MAKE(newp), false);
                 if (r < 0)
@@ -454,8 +473,11 @@ static int handle_generic_user_record_error(
                 if (r != PAM_SUCCESS)
                         return PAM_CONV_ERR; /* no logging here */
 
-                if (isempty(newp))
-                        return pam_syslog_pam_error(handle, LOG_DEBUG, PAM_AUTHTOK_ERR, "PIN request aborted.");
+                if (isempty(newp)) {
+                        if (debug)
+                                pam_syslog(handle, LOG_DEBUG, "PIN request aborted.");
+                        return PAM_AUTHTOK_ERR;
+                }
 
                 r = user_record_set_token_pin(secret, STRV_MAKE(newp), false);
                 if (r < 0)
@@ -513,11 +535,11 @@ static int acquire_home(
         if (r == PAM_SUCCESS && PTR_TO_FD(home_fd_ptr) >= 0)
                 return PAM_SUCCESS;
 
-        r = pam_acquire_bus_connection(handle, &bus);
+        r = pam_acquire_bus_connection(handle, "pam-systemd-home", &bus);
         if (r != PAM_SUCCESS)
                 return r;
 
-        r = acquire_user_record(handle, username, &ur);
+        r = acquire_user_record(handle, username, debug, &ur);
         if (r != PAM_SUCCESS)
                 return r;
 
@@ -584,7 +606,7 @@ static int acquire_home(
                         else if (sd_bus_error_has_name(&error, BUS_ERROR_HOME_LOCKED))
                                 home_locked = true; /* Similar */
                         else {
-                                r = handle_generic_user_record_error(handle, ur->user_name, secret, r, &error);
+                                r = handle_generic_user_record_error(handle, ur->user_name, secret, r, &error, debug);
                                 if (r == PAM_CONV_ERR) {
                                         /* Password/PIN prompts will fail in certain environments, for example when
                                          * we are called from OpenSSH's account or session hooks, or in systemd's
@@ -596,7 +618,8 @@ static int acquire_home(
                                         if (home_locked)
                                                 (void) pam_prompt(handle, PAM_ERROR_MSG, NULL, "Home of user %s is currently locked, please unlock locally first.", ur->user_name);
 
-                                        pam_syslog(handle, please_authenticate ? LOG_ERR : LOG_DEBUG, "Failed to prompt for password/prompt.");
+                                        if (please_authenticate || debug)
+                                                pam_syslog(handle, please_authenticate ? LOG_ERR : LOG_DEBUG, "Failed to prompt for password/prompt.");
 
                                         return home_not_active || home_locked ? PAM_PERM_DENIED : PAM_CONV_ERR;
                                 }
@@ -727,7 +750,7 @@ _public_ PAM_EXTERN int pam_sm_open_session(
 
         r = acquire_home(handle, /* please_authenticate = */ false, suspend_please, debug);
         if (r == PAM_USER_UNKNOWN) /* Not managed by us? Don't complain. */
-                return PAM_SUCCESS;
+                goto success; /* Need to free the bus resource, as acquire_home() takes a reference. */
         if (r != PAM_SUCCESS)
                 return r;
 
@@ -741,10 +764,11 @@ _public_ PAM_EXTERN int pam_sm_open_session(
                 return pam_syslog_pam_error(handle, LOG_ERR, r,
                                             "Failed to set PAM environment variable $SYSTEMD_HOME_SUSPEND: @PAMERR@");
 
+success:
         /* Let's release the D-Bus connection, after all the session might live quite a long time, and we are
          * not going to process the bus connection in that time, so let's better close before the daemon
          * kicks us off because we are not processing anything. */
-        (void) pam_release_bus_connection(handle);
+        (void) pam_release_bus_connection(handle, "pam-systemd-home");
         return PAM_SUCCESS;
 }
 
@@ -784,7 +808,7 @@ _public_ PAM_EXTERN int pam_sm_close_session(
         if (r != PAM_SUCCESS)
                 return r;
 
-        r = pam_acquire_bus_connection(handle, &bus);
+        r = pam_acquire_bus_connection(handle, "pam-systemd-home", &bus);
         if (r != PAM_SUCCESS)
                 return r;
 
@@ -835,7 +859,7 @@ _public_ PAM_EXTERN int pam_sm_acct_mgmt(
         if (r != PAM_SUCCESS)
                 return r;
 
-        r = acquire_user_record(handle, NULL, &ur);
+        r = acquire_user_record(handle, NULL, debug, &ur);
         if (r != PAM_SUCCESS)
                 return r;
 
@@ -943,11 +967,11 @@ _public_ PAM_EXTERN int pam_sm_chauthtok(
         if (debug)
                 pam_syslog(handle, LOG_DEBUG, "pam-systemd-homed account management");
 
-        r = pam_acquire_bus_connection(handle, &bus);
+        r = pam_acquire_bus_connection(handle, "pam-systemd-home", &bus);
         if (r != PAM_SUCCESS)
                 return r;
 
-        r = acquire_user_record(handle, NULL, &ur);
+        r = acquire_user_record(handle, NULL, debug, &ur);
         if (r != PAM_SUCCESS)
                 return r;
 
@@ -968,8 +992,11 @@ _public_ PAM_EXTERN int pam_sm_chauthtok(
                 if (r != PAM_SUCCESS)
                         return pam_syslog_pam_error(handle, LOG_ERR, r, "Failed to get new password: @PAMERR@");
 
-                if (isempty(new_password))
-                        return pam_syslog_pam_error(handle, LOG_DEBUG, PAM_AUTHTOK_ERR, "Password request aborted.");
+                if (isempty(new_password)) {
+                        if (debug)
+                                pam_syslog(handle, LOG_DEBUG, "Password request aborted.");
+                        return PAM_AUTHTOK_ERR;
+                }
 
                 r = pam_get_authtok_verify(handle, &new_password, "new password: "); /* Lower case, since PAM prefixes 'Repeat' */
                 if (r != PAM_SUCCESS)
@@ -1024,7 +1051,7 @@ _public_ PAM_EXTERN int pam_sm_chauthtok(
 
                 r = sd_bus_call(bus, m, HOME_SLOW_BUS_CALL_TIMEOUT_USEC, &error, NULL);
                 if (r < 0) {
-                        r = handle_generic_user_record_error(handle, ur->user_name, old_secret, r, &error);
+                        r = handle_generic_user_record_error(handle, ur->user_name, old_secret, r, &error, debug);
                         if (r == PAM_CONV_ERR)
                                 return pam_syslog_pam_error(handle, LOG_ERR, r,
                                                             "Failed to prompt for password/prompt.");

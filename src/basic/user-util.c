@@ -6,6 +6,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <utmp.h>
@@ -20,7 +21,6 @@
 #include "format-util.h"
 #include "macro.h"
 #include "parse-util.h"
-#include "path-util.h"
 #include "path-util.h"
 #include "random-util.h"
 #include "string-util.h"
@@ -313,7 +313,7 @@ int get_user_creds(
         if (shell) {
                 if (FLAGS_SET(flags, USER_CREDS_CLEAN) &&
                     (isempty(p->pw_shell) ||
-                     !path_is_valid(p->pw_dir) ||
+                     !path_is_valid(p->pw_shell) ||
                      !path_is_absolute(p->pw_shell) ||
                      is_nologin_shell(p->pw_shell)))
                         *shell = NULL;

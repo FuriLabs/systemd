@@ -12,6 +12,7 @@
 #include "missing_capability.h"
 #include "resolved-bus.h"
 #include "resolved-def.h"
+#include "resolved-dns-stream.h"
 #include "resolved-dns-synthesize.h"
 #include "resolved-dnssd-bus.h"
 #include "resolved-dnssd.h"
@@ -159,7 +160,7 @@ static int reply_query_state(DnsQuery *q) {
         case DNS_TRANSACTION_NOT_FOUND:
                 /* We return this as NXDOMAIN. This is only generated when a host doesn't implement LLMNR/TCP, and we
                  * thus quickly know that we cannot resolve an in-addr.arpa or ip6.arpa address. */
-                return reply_method_errorf(q, _BUS_ERROR_DNS "NXDOMAIN", "'%s' not found", dns_query_string(q));
+                return reply_method_errorf(q, BUS_ERROR_DNS_NXDOMAIN, "'%s' not found", dns_query_string(q));
 
         case DNS_TRANSACTION_NO_SOURCE:
                 return reply_method_errorf(q, BUS_ERROR_NO_SOURCE, "All suitable resolution sources turned off");
@@ -176,7 +177,7 @@ static int reply_query_state(DnsQuery *q) {
                         return 0;
 
                 if (q->answer_rcode == DNS_RCODE_NXDOMAIN)
-                        sd_bus_error_setf(&error, _BUS_ERROR_DNS "NXDOMAIN", "'%s' not found", dns_query_string(q));
+                        sd_bus_error_setf(&error, BUS_ERROR_DNS_NXDOMAIN, "Name '%s' not found", dns_query_string(q));
                 else {
                         const char *rc, *n;
 
@@ -1854,6 +1855,7 @@ static int bus_method_reset_server_features(sd_bus_message *message, void *userd
 
         bus_client_log(message, "server feature reset");
 
+        (void) dns_stream_disconnect_all(m);
         manager_reset_server_features(m);
 
         return sd_bus_reply_method_return(message, NULL);
@@ -2240,9 +2242,15 @@ static int match_prepare_for_sleep(sd_bus_message *message, void *userdata, sd_b
         if (b)
                 return 0;
 
-        log_debug("Coming back from suspend, verifying all RRs...");
+        log_debug("Coming back from suspend, closing all TCP connections...");
+        (void) dns_stream_disconnect_all(m);
 
+        log_debug("Coming back from suspend, resetting all probed server features...");
+        manager_reset_server_features(m);
+
+        log_debug("Coming back from suspend, verifying all RRs...");
         manager_verify_all(m);
+
         return 0;
 }
 

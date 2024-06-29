@@ -75,7 +75,7 @@
         create an independent session.</para></listitem>
 
         <listitem><para>In the child, call <function>fork()</function> again, to ensure that the daemon can
-        never re-acquire a terminal again. (This relevant if the program — and all its dependencies — does
+        never re-acquire a terminal again. (This is relevant if the program — and all its dependencies — does
         not carefully specify `O_NOCTTY` on each and every single `open()` call that might potentially open a
         TTY device node.)</para></listitem>
 
@@ -553,7 +553,7 @@
       unit installation path during source
       configuration:</para>
 
-      <programlisting>PKG_PROG_PKG_CONFIG
+      <programlisting>PKG_PROG_PKG_CONFIG()
 AC_ARG_WITH([systemdsystemunitdir],
      [AS_HELP_STRING([--with-systemdsystemunitdir=DIR], [Directory for systemd service files])],,
      [with_systemdsystemunitdir=auto])

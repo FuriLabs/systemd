@@ -330,7 +330,6 @@ TEST(executable_is_script) {
         assert_se(r == 0);
 
         r = executable_is_script("/usr/bin/yum", &command);
-        assert_se(r > 0 || r == -ENOENT);
         if (r > 0) {
                 assert_se(startswith(command, "/"));
                 free(command);
@@ -428,7 +427,7 @@ TEST(write_string_stream) {
 TEST(write_string_file) {
         _cleanup_(unlink_tempfilep) char fn[] = "/tmp/test-write_string_file-XXXXXX";
         char buf[64] = {};
-        _cleanup_close_ int fd;
+        _cleanup_close_ int fd = -EBADF;
 
         fd = mkostemp_safe(fn);
         assert_se(fd >= 0);
@@ -441,7 +440,7 @@ TEST(write_string_file) {
 
 TEST(write_string_file_no_create) {
         _cleanup_(unlink_tempfilep) char fn[] = "/tmp/test-write_string_file_no_create-XXXXXX";
-        _cleanup_close_ int fd;
+        _cleanup_close_ int fd = -EBADF;
         char buf[64] = {};
 
         fd = mkostemp_safe(fn);
@@ -459,7 +458,7 @@ TEST(write_string_file_verify) {
         int r;
 
         r = read_one_line_file("/proc/version", &buf);
-        if (ERRNO_IS_PRIVILEGE(r))
+        if (r < 0 && ERRNO_IS_PRIVILEGE(r))
                 return;
         assert_se(r >= 0);
         assert_se(buf2 = strjoin(buf, "\n"));

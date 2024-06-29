@@ -919,17 +919,21 @@ static bool menu_run(
                 case KEYPRESS(0, 0, 'e'):
                 case KEYPRESS(0, 0, 'E'):
                         /* only the options of configured entries can be edited */
-                        if (!config->editor || !IN_SET(config->entries[idx_highlight]->type,
-                            LOADER_EFI, LOADER_LINUX, LOADER_UNIFIED_LINUX))
+                        if (!config->editor ||
+                            !IN_SET(config->entries[idx_highlight]->type, LOADER_EFI, LOADER_LINUX, LOADER_UNIFIED_LINUX)) {
+                                status = xstrdup16(u"Entry does not support editing the command line.");
                                 break;
+                        }
 
                         /* Unified kernels that are signed as a whole will not accept command line options
                          * when secure boot is enabled unless there is none embedded in the image. Do not try
                          * to pretend we can edit it to only have it be ignored. */
                         if (config->entries[idx_highlight]->type == LOADER_UNIFIED_LINUX &&
                             secure_boot_enabled() &&
-                            config->entries[idx_highlight]->options)
+                            config->entries[idx_highlight]->options) {
+                                status = xstrdup16(u"Entry not editable in SecureBoot mode.");
                                 break;
+                        }
 
                         /* The edit line may end up on the last line of the screen. And even though we're
                          * not telling the firmware to advance the line, it still does in this one case,
@@ -1137,7 +1141,7 @@ static char *line_get_key_value(
                 line[linelen] = '\0';
 
                 /* remove leading whitespace */
-                while (strchr8(" \t", *line)) {
+                while (linelen > 0 && strchr8(" \t", *line)) {
                         line++;
                         linelen--;
                 }
@@ -1361,7 +1365,7 @@ static void config_entry_parse_tries(
                         suffix);
 }
 
-static void config_entry_bump_counters(ConfigEntry *entry, EFI_FILE *root_dir) {
+static EFI_STATUS config_entry_bump_counters(ConfigEntry *entry) {
         _cleanup_free_ char16_t* old_path = NULL, *new_path = NULL;
         _cleanup_(file_closep) EFI_FILE *handle = NULL;
         _cleanup_free_ EFI_FILE_INFO *file_info = NULL;
@@ -1369,34 +1373,48 @@ static void config_entry_bump_counters(ConfigEntry *entry, EFI_FILE *root_dir) {
         EFI_STATUS err;
 
         assert(entry);
-        assert(root_dir);
 
         if (entry->tries_left < 0)
-                return;
+                return EFI_SUCCESS;
 
         if (!entry->path || !entry->current_name || !entry->next_name)
-                return;
+                return EFI_SUCCESS;
+
+        _cleanup_(file_closep) EFI_FILE *root = NULL;
+        err = open_volume(entry->device, &root);
+        if (err != EFI_SUCCESS) {
+                log_error_stall(L"Error opening entry root path: %r", err);
+                return err;
+        }
 
         old_path = xpool_print(L"%s\\%s", entry->path, entry->current_name);
 
-        err = root_dir->Open(root_dir, &handle, old_path, EFI_FILE_MODE_READ|EFI_FILE_MODE_WRITE, 0ULL);
-        if (err != EFI_SUCCESS)
-                return;
+        err = root->Open(root, &handle, old_path, EFI_FILE_MODE_READ|EFI_FILE_MODE_WRITE, 0ULL);
+        if (err != EFI_SUCCESS) {
+                log_error_stall(L"Error opening boot entry: %r", err);
+                return err;
+        }
 
         err = get_file_info_harder(handle, &file_info, &file_info_size);
-        if (err != EFI_SUCCESS)
-                return;
+        if (err != EFI_SUCCESS) {
+                log_error_stall(L"Error getting boot entry file info: %r", err);
+                return err;
+        }
 
         /* And rename the file */
         strcpy16(file_info->FileName, entry->next_name);
         err = handle->SetInfo(handle, &GenericFileInfo, file_info_size, file_info);
         if (err != EFI_SUCCESS) {
                 log_error_stall(L"Failed to rename '%s' to '%s', ignoring: %r", old_path, entry->next_name, err);
-                return;
+                return err;
         }
 
         /* Flush everything to disk, just in case… */
-        (void) handle->Flush(handle);
+        err = handle->Flush(handle);
+        if (err != EFI_SUCCESS) {
+                log_error_stall(L"Error flushing boot entry file info: %r", err);
+                return err;
+        }
 
         /* Let's tell the OS that we renamed this file, so that it knows what to rename to the counter-less name on
          * success */
@@ -1408,6 +1426,8 @@ static void config_entry_bump_counters(ConfigEntry *entry, EFI_FILE *root_dir) {
                 free(entry->loader);
                 entry->loader = TAKE_PTR(new_path);
         }
+
+        return EFI_SUCCESS;
 }
 
 static void config_entry_add_type1(
@@ -2285,9 +2305,9 @@ static EFI_STATUS initrd_prepare(
         assert(ret_initrd_size);
 
         if (entry->type != LOADER_LINUX || !entry->initrd) {
-                ret_options = NULL;
-                ret_initrd = NULL;
-                ret_initrd_size = 0;
+                *ret_options = NULL;
+                *ret_initrd = NULL;
+                *ret_initrd_size = 0;
                 return EFI_SUCCESS;
         }
 
@@ -2327,7 +2347,7 @@ static EFI_STATUS initrd_prepare(
                         return EFI_OUT_OF_RESOURCES;
                 initrd = xrealloc(initrd, size, new_size);
 
-                err = handle->Read(handle, &read_size, initrd + size);
+                err = chunked_read(handle, &read_size, initrd + size);
                 if (err != EFI_SUCCESS)
                         return err;
 
@@ -2382,7 +2402,9 @@ static EFI_STATUS image_start(
         if (err != EFI_SUCCESS)
                 return log_error_status_stall(err, L"Error loading %s: %r", entry->loader, err);
 
-        if (entry->devicetree) {
+        /* DTBs are loaded by the kernel before ExitBootServices, and they can be used to map and assign
+         * arbitrary memory ranges, so skip it when secure boot is enabled as the DTB here is unverified. */
+        if (entry->devicetree && !secure_boot_enabled()) {
                 err = devicetree_install(&dtstate, image_root, entry->devicetree);
                 if (err != EFI_SUCCESS)
                         return log_error_status_stall(err, L"Error loading %s: %r", entry->devicetree, err);
@@ -2442,7 +2464,9 @@ static void config_free(Config *config) {
                 config_entry_free(config->entries[i]);
         free(config->entries);
         free(config->entry_default_config);
+        free(config->entry_default_efivar);
         free(config->entry_oneshot);
+        free(config->entry_saved);
 }
 
 static void config_write_entries_to_variable(Config *config) {
@@ -2493,7 +2517,7 @@ static EFI_STATUS secure_boot_discover_keys(Config *config, EFI_FILE *root_dir) 
         EFI_STATUS err;
         _cleanup_(file_closep) EFI_FILE *keys_basedir = NULL;
 
-        if (secure_boot_mode() != SECURE_BOOT_SETUP)
+        if (!IN_SET(secure_boot_mode(), SECURE_BOOT_SETUP, SECURE_BOOT_AUDIT))
                 return EFI_SUCCESS;
 
         /* the lack of a 'keys' directory is not fatal and is silently ignored */
@@ -2734,7 +2758,7 @@ EFI_STATUS efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *sys_table) {
                         continue;
                 }
 
-                config_entry_bump_counters(entry, root_dir);
+                (void) config_entry_bump_counters(entry);
                 save_selected_entry(&config, entry);
 
                 /* Optionally, read a random seed off the ESP and pass it to the OS */

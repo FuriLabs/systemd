@@ -519,7 +519,7 @@ static int bus_cgroup_set_transient_property(
 
                 if (!UNIT_WRITE_FLAGS_NOOP(flags)) {
                         c->delegate = b;
-                        c->delegate_controllers = b ? _CGROUP_MASK_ALL : 0;
+                        c->delegate_controllers = b ? CGROUP_MASK_DELEGATE : 0;
 
                         unit_write_settingf(u, flags, name, "Delegate=%s", yes_no(b));
                 }
@@ -1215,7 +1215,7 @@ int bus_cgroup_set_property(
                         new_set = (CPUSet) {};
 
                         unit_invalidate_cgroup(u, CGROUP_MASK_CPUSET);
-                        unit_write_settingf(u, flags, name, "%s=%s", name, setstr);
+                        unit_write_settingf(u, flags, name, "%s=\n%s=%s", name, name, setstr);
                 }
 
                 return 1;
@@ -1990,12 +1990,14 @@ int bus_cgroup_set_property(
                         if (!f)
                                 return -ENOMEM;
 
-                        fprintf(f, "%s:", name);
-
-                        LIST_FOREACH(socket_bind_items, item, *list)
-                                cgroup_context_dump_socket_bind_item(item, f);
-
-                        fputc('\n', f);
+                        if (n == 0)
+                                fprintf(f, "%s=\n", name);
+                        else
+                                LIST_FOREACH(socket_bind_items, item, *list) {
+                                        fprintf(f, "%s=", name);
+                                        cgroup_context_dump_socket_bind_item(item, f);
+                                        fputc('\n', f);
+                                }
 
                         r = fflush_and_check(f);
                         if (r < 0)
@@ -2031,7 +2033,7 @@ int bus_cgroup_set_property(
 
                         if (strv_isempty(l)) {
                                 c->restrict_network_interfaces_is_allow_list = false;
-                                c->restrict_network_interfaces = set_free(c->restrict_network_interfaces);
+                                c->restrict_network_interfaces = set_free_free(c->restrict_network_interfaces);
 
                                 unit_write_settingf(u, flags, name, "%s=", name);
                                 return 1;

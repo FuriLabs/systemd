@@ -96,6 +96,10 @@ static int slice_verify(Slice *s) {
         if (r < 0)
                 return log_unit_error_errno(UNIT(s), r, "Failed to determine parent slice: %m");
 
+        /* If recursive errors are to be ignored, the parent slice should not be verified */
+        if (UNIT(s)->manager && FLAGS_SET(UNIT(s)->manager->test_run_flags, MANAGER_TEST_RUN_IGNORE_DEPENDENCIES))
+                return 0;
+
         if (parent ? !unit_has_name(UNIT_GET_SLICE(UNIT(s)), parent) : !!UNIT_GET_SLICE(UNIT(s)))
                 return log_unit_error_errno(UNIT(s), SYNTHETIC_ERRNO(ENOEXEC), "Located outside of parent slice. Refusing.");
 
@@ -375,7 +379,7 @@ static int slice_freezer_action(Unit *s, FreezerAction action) {
         assert(s);
         assert(IN_SET(action, FREEZER_FREEZE, FREEZER_THAW));
 
-        if (!slice_freezer_action_supported_by_children(s)) {
+        if (action == FREEZER_FREEZE && !slice_freezer_action_supported_by_children(s)) {
                 log_unit_warning(s, "Requested freezer operation is not supported by all children of the slice");
                 return 0;
         }
@@ -386,8 +390,11 @@ static int slice_freezer_action(Unit *s, FreezerAction action) {
 
                 if (action == FREEZER_FREEZE)
                         r = UNIT_VTABLE(member)->freeze(member);
-                else
+                else if (UNIT_VTABLE(member)->thaw)
                         r = UNIT_VTABLE(member)->thaw(member);
+                else
+                        /* Thawing is requested but no corresponding method is available, ignore. */
+                        r = 0;
                 if (r < 0)
                         return r;
         }

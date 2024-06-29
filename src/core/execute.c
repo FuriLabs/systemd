@@ -4,6 +4,7 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <sys/eventfd.h>
+#include <sys/file.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/mount.h>
@@ -150,7 +151,7 @@ static int shift_fds(int fds[], size_t n_fds) {
         return 0;
 }
 
-static int flags_fds(const int fds[], size_t n_socket_fds, size_t n_storage_fds, bool nonblock) {
+static int flag_fds(const int fds[], size_t n_socket_fds, size_t n_storage_fds, bool nonblock) {
         size_t n_fds;
         int r;
 
@@ -159,6 +160,7 @@ static int flags_fds(const int fds[], size_t n_socket_fds, size_t n_storage_fds,
                 return 0;
 
         assert(fds);
+        assert(fds || n_fds == 0);
 
         /* Drops/Sets O_NONBLOCK and FD_CLOEXEC from the file flags.
          * O_NONBLOCK only applies to socket activation though. */
@@ -2629,7 +2631,7 @@ static char **credential_search_path(
         if (DEBUG_LOGGING) {
                 _cleanup_free_ char *t = strv_join(l, ":");
 
-                log_debug("Credential search path is: %s", t);
+                log_debug("Credential search path is: %s", strempty(t));
         }
 
         return TAKE_PTR(l);
@@ -2863,6 +2865,10 @@ static int acquire_credentials(
         if (dfd < 0)
                 return -errno;
 
+        r = fd_acl_make_writable(dfd); /* Add the "w" bit, if we are reusing an already set up credentials dir where it was unset */
+        if (r < 0)
+                return r;
+
         /* First, load credentials off disk (or acquire via AF_UNIX socket) */
         HASHMAP_FOREACH(lc, context->load_credentials) {
                 _cleanup_close_ int sub_fd = -1;
@@ -2955,8 +2961,9 @@ static int acquire_credentials(
                 left -= add;
         }
 
-        if (fchmod(dfd, 0500) < 0) /* Now take away the "w" bit */
-                return -errno;
+        r = fd_acl_make_read_only(dfd); /* Now take away the "w" bit */
+        if (r < 0)
+                return r;
 
         /* After we created all keys with the right perms, also make sure the credential store as a whole is
          * accessible */
@@ -4190,6 +4197,9 @@ static int exec_child(
 
         log_forget_fds();
         log_set_open_when_needed(true);
+        log_settle_target();
+        if (context->log_level_max >= 0)
+                log_set_max_level(context->log_level_max);
 
         /* In case anything used libc syslog(), close this here, too */
         closelog();
@@ -4249,6 +4259,7 @@ static int exec_child(
                                 *exit_status = EXIT_SUCCESS;
                                 return 0;
                         }
+
                         *exit_status = EXIT_CONFIRM;
                         return log_unit_error_errno(unit, SYNTHETIC_ERRNO(ECANCELED),
                                                     "Execution cancelled by the user");
@@ -4419,14 +4430,18 @@ static int exec_child(
                 r = set_coredump_filter(context->coredump_filter);
                 if (ERRNO_IS_PRIVILEGE(r))
                         log_unit_debug_errno(unit, r, "Failed to adjust coredump_filter, ignoring: %m");
-                else if (r < 0)
+                else if (r < 0) {
+                        *exit_status = EXIT_LIMITS;
                         return log_unit_error_errno(unit, r, "Failed to adjust coredump_filter: %m");
+                }
         }
 
         if (context->nice_set) {
                 r = setpriority_closest(context->nice);
-                if (r < 0)
+                if (r < 0) {
+                        *exit_status = EXIT_NICE;
                         return log_unit_error_errno(unit, r, "Failed to set up process scheduling priority (nice level): %m");
+                }
         }
 
         if (context->cpu_sched_set) {
@@ -4497,6 +4512,16 @@ static int exec_child(
         }
 
         if (context->utmp_id) {
+                _cleanup_free_ char *username_alloc = NULL;
+
+                if (!username && context->utmp_mode == EXEC_UTMP_USER) {
+                        username_alloc = uid_to_name(uid_is_valid(uid) ? uid : saved_uid);
+                        if (!username_alloc) {
+                                *exit_status = EXIT_USER;
+                                return log_oom();
+                        }
+                }
+
                 const char *line = context->tty_path ?
                         (path_startswith(context->tty_path, "/dev/") ?: context->tty_path) :
                         NULL;
@@ -4505,7 +4530,7 @@ static int exec_child(
                                       context->utmp_mode == EXEC_UTMP_INIT  ? INIT_PROCESS :
                                       context->utmp_mode == EXEC_UTMP_LOGIN ? LOGIN_PROCESS :
                                       USER_PROCESS,
-                                      username);
+                                      username ?: username_alloc);
         }
 
         if (uid_is_valid(uid)) {
@@ -4685,12 +4710,14 @@ static int exec_child(
 
                 if (ns_type_supported(NAMESPACE_NET)) {
                         r = setup_shareable_ns(runtime->netns_storage_socket, CLONE_NEWNET);
-                        if (r == -EPERM)
-                                log_unit_warning_errno(unit, r,
-                                                       "PrivateNetwork=yes is configured, but network namespace setup failed, ignoring: %m");
-                        else if (r < 0) {
-                                *exit_status = EXIT_NETWORK;
-                                return log_unit_error_errno(unit, r, "Failed to set up network namespacing: %m");
+                        if (r < 0) {
+                                if (ERRNO_IS_PRIVILEGE(r))
+                                        log_unit_warning_errno(unit, r,
+                                                               "PrivateNetwork=yes is configured, but network namespace setup failed, ignoring: %m");
+                                else {
+                                        *exit_status = EXIT_NETWORK;
+                                        return log_unit_error_errno(unit, r, "Failed to set up network namespacing: %m");
+                                }
                         }
                 } else if (context->network_namespace_path) {
                         *exit_status = EXIT_NETWORK;
@@ -4704,12 +4731,14 @@ static int exec_child(
 
                 if (ns_type_supported(NAMESPACE_IPC)) {
                         r = setup_shareable_ns(runtime->ipcns_storage_socket, CLONE_NEWIPC);
-                        if (r == -EPERM)
-                                log_unit_warning_errno(unit, r,
-                                                       "PrivateIPC=yes is configured, but IPC namespace setup failed, ignoring: %m");
-                        else if (r < 0) {
-                                *exit_status = EXIT_NAMESPACE;
-                                return log_unit_error_errno(unit, r, "Failed to set up IPC namespacing: %m");
+                        if (r < 0) {
+                                if (ERRNO_IS_PRIVILEGE(r))
+                                        log_unit_warning_errno(unit, r,
+                                                               "PrivateIPC=yes is configured, but IPC namespace setup failed, ignoring: %m");
+                                else {
+                                        *exit_status = EXIT_NAMESPACE;
+                                        return log_unit_error_errno(unit, r, "Failed to set up IPC namespacing: %m");
+                                }
                         }
                 } else if (context->ipc_namespace_path) {
                         *exit_status = EXIT_NAMESPACE;
@@ -4790,11 +4819,11 @@ static int exec_child(
                                               LOG_UNIT_MESSAGE(unit, "Executable %s missing, skipping: %m",
                                                                command->path),
                                               "EXECUTABLE=%s", command->path);
+                        *exit_status = EXIT_SUCCESS;
                         return 0;
                 }
 
                 *exit_status = EXIT_EXEC;
-
                 return log_unit_struct_errno(unit, LOG_INFO, r,
                                              "MESSAGE_ID=" SD_MESSAGE_SPAWN_FAILED_STR,
                                              LOG_UNIT_INVOCATION_ID(unit),
@@ -4841,7 +4870,7 @@ static int exec_child(
         if (r >= 0)
                 r = shift_fds(fds, n_fds);
         if (r >= 0)
-                r = flags_fds(fds, n_socket_fds, n_storage_fds, context->non_blocking);
+                r = flag_fds(fds, n_socket_fds, n_storage_fds, context->non_blocking);
         if (r < 0) {
                 *exit_status = EXIT_FDS;
                 return log_unit_error_errno(unit, r, "Failed to adjust passed file descriptors: %m");
@@ -5260,7 +5289,7 @@ int exec_spawn(Unit *unit,
                 return log_unit_error_errno(unit, errno, "Failed to fork: %m");
 
         if (pid == 0) {
-                int exit_status = EXIT_SUCCESS;
+                int exit_status;
 
                 r = exec_child(unit,
                                command,
@@ -5278,9 +5307,8 @@ int exec_spawn(Unit *unit,
                                &exit_status);
 
                 if (r < 0) {
-                        const char *status =
-                                exit_status_to_string(exit_status,
-                                                      EXIT_STATUS_LIBC | EXIT_STATUS_SYSTEMD);
+                        const char *status = ASSERT_PTR(
+                                        exit_status_to_string(exit_status, EXIT_STATUS_LIBC | EXIT_STATUS_SYSTEMD));
 
                         log_unit_struct_errno(unit, LOG_ERR, r,
                                               "MESSAGE_ID=" SD_MESSAGE_SPAWN_FAILED_STR,
@@ -5288,7 +5316,8 @@ int exec_spawn(Unit *unit,
                                               LOG_UNIT_MESSAGE(unit, "Failed at step %s spawning %s: %m",
                                                                status, command->path),
                                               "EXECUTABLE=%s", command->path);
-                }
+                } else
+                        assert(exit_status == EXIT_SUCCESS);
 
                 _exit(exit_status);
         }
@@ -5393,7 +5422,7 @@ void exec_context_done(ExecContext *c) {
         c->apparmor_profile = mfree(c->apparmor_profile);
         c->smack_process_label = mfree(c->smack_process_label);
 
-        c->restrict_filesystems = set_free(c->restrict_filesystems);
+        c->restrict_filesystems = set_free_free(c->restrict_filesystems);
 
         c->syscall_filter = hashmap_free(c->syscall_filter);
         c->syscall_archs = set_free(c->syscall_archs);
@@ -6301,7 +6330,7 @@ void exec_context_revert_tty(ExecContext *c) {
         if (!path)
                 return;
 
-        fd = open(path, O_PATH|O_CLOEXEC);
+        fd = open(path, O_PATH|O_CLOEXEC); /* Pin the inode */
         if (fd < 0)
                 return (void) log_full_errno(errno == ENOENT ? LOG_DEBUG : LOG_WARNING, errno,
                                              "Failed to open TTY inode of '%s' to adjust ownership/access mode, ignoring: %m",
@@ -6320,7 +6349,7 @@ void exec_context_revert_tty(ExecContext *c) {
 
         r = fchmod_and_chown(fd, TTY_MODE, 0, TTY_GID);
         if (r < 0)
-                log_warning_errno(r, "Failed to reset TTY ownership/access mode of %s, ignoring: %m", path);
+                log_warning_errno(r, "Failed to reset TTY ownership/access mode of %s to " UID_FMT ":" GID_FMT ", ignoring: %m", path, (uid_t) 0, (gid_t) TTY_GID);
 }
 
 int exec_context_get_clean_directories(

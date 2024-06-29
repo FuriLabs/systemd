@@ -8,6 +8,7 @@
 #include "fd-util.h"
 #include "fileio.h"
 #include "fs-util.h"
+#include "missing_threads.h"
 #include "mkdir.h"
 #include "parse-util.h"
 #include "path-util.h"
@@ -420,6 +421,8 @@ int cg_set_access(
                 { "cgroup.procs",           true  },
                 { "cgroup.subtree_control", true  },
                 { "cgroup.threads",         false },
+                { "memory.oom.group",       false },
+                { "memory.reclaim",         false },
                 {},
         };
 

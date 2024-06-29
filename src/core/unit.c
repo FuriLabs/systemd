@@ -672,6 +672,8 @@ Unit* unit_free(Unit *u) {
         if (!u)
                 return NULL;
 
+        sd_event_source_disable_unref(u->auto_start_stop_event_source);
+
         u->transient_file = safe_fclose(u->transient_file);
 
         if (!MANAGER_IS_RELOADING(u->manager))
@@ -902,7 +904,7 @@ static int unit_reserve_dependencies(Unit *u, Unit *other) {
         /* Let's reserve some space in the dependency hashmaps so that later on merging the units cannot
          * fail.
          *
-         * First make some room in the per dependency type hashmaps. Using the summed size of both unit's
+         * First make some room in the per dependency type hashmaps. Using the summed size of both units'
          * hashmaps is an estimate that is likely too high since they probably use some of the same
          * types. But it's never too low, and that's all we need. */
 
@@ -987,7 +989,6 @@ static int unit_per_dependency_type_hashmap_update(
         }
         if (r < 0)
                 return r;
-
 
         return 1;
 }
@@ -1543,7 +1544,8 @@ static int unit_add_mount_dependencies(Unit *u) {
 
 static int unit_add_oomd_dependencies(Unit *u) {
         CGroupContext *c;
-        bool wants_oomd;
+        CGroupMask mask;
+        int r;
 
         assert(u);
 
@@ -1554,8 +1556,18 @@ static int unit_add_oomd_dependencies(Unit *u) {
         if (!c)
                 return 0;
 
-        wants_oomd = (c->moom_swap == MANAGED_OOM_KILL || c->moom_mem_pressure == MANAGED_OOM_KILL);
+        bool wants_oomd = c->moom_swap == MANAGED_OOM_KILL || c->moom_mem_pressure == MANAGED_OOM_KILL;
         if (!wants_oomd)
+                return 0;
+
+        if (!cg_all_unified())
+                return 0;
+
+        r = cg_mask_supported(&mask);
+        if (r < 0)
+                return log_debug_errno(r, "Failed to determine supported controllers: %m");
+
+        if (!FLAGS_SET(mask, CGROUP_MASK_MEMORY))
                 return 0;
 
         return unit_add_two_dependencies_by_name(u, UNIT_AFTER, UNIT_WANTS, "systemd-oomd.service", true, UNIT_DEPENDENCY_FILE);
@@ -4157,6 +4169,23 @@ int unit_patch_contexts(Unit *u) {
                                 if (r < 0)
                                         return r;
                         }
+
+                        /* If there are encrypted credentials we might need to access the TPM. */
+                        bool allow_tpm = false;
+                        ExecLoadCredential *load_cred;
+                        ExecSetCredential *set_cred;
+                        HASHMAP_FOREACH(load_cred, ec->load_credentials)
+                                if ((allow_tpm |= load_cred->encrypted))
+                                        break;
+                        HASHMAP_FOREACH(set_cred, ec->set_credentials)
+                                if ((allow_tpm |= set_cred->encrypted))
+                                        break;
+
+                        if (allow_tpm) {
+                                r = cgroup_add_device_allow(cc, "/dev/tpmrm0", "rw");
+                                if (r < 0)
+                                        return r;
+                        }
                 }
         }
 
@@ -4488,7 +4517,9 @@ static int log_kill(pid_t pid, int sig, void *userdata) {
         /* Don't log about processes marked with brackets, under the assumption that these are temporary processes
            only, like for example systemd's own PAM stub process. */
         if (comm && comm[0] == '(')
-                return 0;
+                /* Although we didn't log anything, as this callback is used in unit_kill_context we must return 1
+                 * here to let the manager know that a process was killed. */
+                return 1;
 
         log_unit_notice(userdata,
                         "Killing process " PID_FMT " (%s) with signal SIG%s.",
@@ -5992,7 +6023,9 @@ int activation_details_deserialize(const char *key, const char *value, Activatio
                         return -EINVAL;
 
                 t = unit_type_from_string(value);
-                if (t == _UNIT_TYPE_INVALID)
+                /* The activation details vtable has defined ops only for path
+                 * and timer units */
+                if (!IN_SET(t, UNIT_PATH, UNIT_TIMER))
                         return -EINVAL;
 
                 *details = malloc0(activation_details_vtable[t]->object_size);
@@ -6066,7 +6099,7 @@ int activation_details_append_pair(ActivationDetails *details, char ***strv) {
                         return r;
         }
 
-        if (ACTIVATION_DETAILS_VTABLE(details)->append_env) {
+        if (ACTIVATION_DETAILS_VTABLE(details)->append_pair) {
                 r = ACTIVATION_DETAILS_VTABLE(details)->append_pair(details, strv);
                 if (r < 0)
                         return r;

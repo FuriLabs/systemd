@@ -711,7 +711,7 @@ static int session_dispatch_stop_on_idle(sd_event_source *source, uint64_t t, vo
 
         idle = session_get_idle_hint(s, &ts);
         if (idle) {
-                log_debug("Session \"%s\" of user \"%s\" is idle, stopping.", s->id, s->user->user_record->user_name);
+                log_info("Session \"%s\" of user \"%s\" is idle, stopping.", s->id, s->user->user_record->user_name);
 
                 return session_stop(s, /* force */ true);
         }
@@ -1397,6 +1397,23 @@ void session_leave_vt(Session *s) {
 
         session_device_pause_all(s);
         r = vt_release(s->vtfd, false);
+        if (r == -EIO) {
+                int vt, old_fd;
+
+                /* It might happen if the controlling process exited before or while we were
+                 * restoring the VT as it would leave the old file-descriptor in a hung-up
+                 * state. In this case let's retry with a fresh handle to the virtual terminal. */
+
+                /* We do a little dance to avoid having the terminal be available
+                 * for reuse before we've cleaned it up. */
+                old_fd = TAKE_FD(s->vtfd);
+
+                vt = session_open_vt(s);
+                safe_close(old_fd);
+
+                if (vt >= 0)
+                        r = vt_release(vt, false);
+        }
         if (r < 0)
                 log_debug_errno(r, "Cannot release VT of session %s: %m", s->id);
 }

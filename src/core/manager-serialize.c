@@ -164,6 +164,14 @@ int manager_serialize(
                 (void) serialize_item_format(f, "user-lookup", "%i %i", copy0, copy1);
         }
 
+        (void) serialize_item_format(f,
+                                     "dump-ratelimit",
+                                     USEC_FMT " " USEC_FMT " %u %u",
+                                     m->dump_ratelimit.begin,
+                                     m->dump_ratelimit.interval,
+                                     m->dump_ratelimit.num,
+                                     m->dump_ratelimit.burst);
+
         bus_track_serialize(m->subscribed, f, "subscribed");
 
         r = dynamic_user_serialize(m, f, fds);
@@ -265,7 +273,7 @@ static void manager_deserialize_uid_refs_one_internal(
 
         r = parse_uid(value, &uid);
         if (r < 0 || uid == 0) {
-                log_debug("Unable to parse UID/GID reference serialization: " UID_FMT, uid);
+                log_debug("Unable to parse UID/GID reference serialization: %s", value);
                 return;
         }
 
@@ -525,21 +533,12 @@ int manager_deserialize(Manager *m, FILE *f, FDSet *fds) {
                                 return -ENOMEM;
                 } else if ((val = startswith(l, "varlink-server-socket-address="))) {
                         if (!m->varlink_server && MANAGER_IS_SYSTEM(m)) {
-                                _cleanup_(varlink_server_unrefp) VarlinkServer *s = NULL;
-
-                                r = manager_setup_varlink_server(m, &s);
+                                r = manager_varlink_init(m);
                                 if (r < 0) {
                                         log_warning_errno(r, "Failed to setup varlink server, ignoring: %m");
                                         continue;
                                 }
 
-                                r = varlink_server_attach_event(s, m->event, SD_EVENT_PRIORITY_NORMAL);
-                                if (r < 0) {
-                                        log_warning_errno(r, "Failed to attach varlink connection to event loop, ignoring: %m");
-                                        continue;
-                                }
-
-                                m->varlink_server = TAKE_PTR(s);
                                 deserialize_varlink_sockets = true;
                         }
 
@@ -549,6 +548,21 @@ int manager_deserialize(Manager *m, FILE *f, FDSet *fds) {
                          * remains set until all serialized contents are handled. */
                         if (deserialize_varlink_sockets)
                                 (void) varlink_server_deserialize_one(m->varlink_server, val, fds);
+                } else if ((val = startswith(l, "dump-ratelimit="))) {
+                        usec_t begin, interval;
+                        unsigned num, burst;
+
+                        if (sscanf(val, USEC_FMT " " USEC_FMT " %u %u", &begin, &interval, &num, &burst) != 4)
+                                log_notice("Failed to parse dump ratelimit, ignoring: %s", val);
+                        else {
+                                /* If we changed the values across versions, flush the counter */
+                                if (interval != m->dump_ratelimit.interval || burst != m->dump_ratelimit.burst)
+                                        m->dump_ratelimit.num = 0;
+                                else
+                                        m->dump_ratelimit.num = num;
+                                m->dump_ratelimit.begin = begin;
+                        }
+
                 } else {
                         ManagerTimestamp q;
 

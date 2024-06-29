@@ -5,6 +5,7 @@
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/file.h>
 #include <sys/sendfile.h>
 #include <sys/xattr.h>
 #include <unistd.h>
@@ -262,9 +263,22 @@ int copy_bytes_full(
                         /* If we're in a hole (current offset is not a data offset), create a hole of the
                          * same size in the target file. */
                         if (e > c) {
-                                r = create_hole(fdt, e - c);
+                                /* Make sure our new hole doesn't go over the maximum size we're allowed to copy. */
+                                n = MIN(max_bytes, (uint64_t) e - c);
+                                r = create_hole(fdt, n);
                                 if (r < 0)
                                         return r;
+
+                                /* Make sure holes are taken into account in the maximum size we're supposed to copy. */
+                                if (max_bytes != UINT64_MAX) {
+                                        max_bytes -= n;
+                                        if (max_bytes <= 0)
+                                                break;
+                                }
+
+                                /* Update the size we're supposed to copy in this iteration if needed. */
+                                if (m > max_bytes)
+                                        m = max_bytes;
                         }
 
                         c = e; /* Set c to the start of the data segment. */
@@ -290,7 +304,7 @@ int copy_bytes_full(
                 if (try_cfr) {
                         n = try_copy_file_range(fdf, NULL, fdt, NULL, m, 0u);
                         if (n < 0) {
-                                if (!IN_SET(n, -EINVAL, -ENOSYS, -EXDEV, -EBADF))
+                                if (!IN_SET(n, -EINVAL, -ENOSYS, -EXDEV, -EBADF, -EOPNOTSUPP))
                                         return n;
 
                                 try_cfr = false;
@@ -596,6 +610,10 @@ static void hardlink_context_destroy(HardlinkContext *c) {
          * _cleanup_() so that we really delete this, even on failure. */
 
         if (c->dir_fd >= 0) {
+                /* <dir_fd> might be have already been used for reading, so we need to rewind it. */
+                if (lseek(c->dir_fd, 0, SEEK_SET) < 0)
+                        log_debug_errno(errno, "Failed to lseek on file descriptor, ignoring: %m");
+
                 r = rm_rf_children(TAKE_FD(c->dir_fd), REMOVE_PHYSICAL, NULL); /* consumes dir_fd in all cases, even on failure */
                 if (r < 0)
                         log_debug_errno(r, "Failed to remove hardlink store (%s) contents, ignoring: %m", c->subdir);

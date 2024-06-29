@@ -3,7 +3,7 @@
 set -eux
 set -o pipefail
 
-if ! command -v systemd-repart &>/dev/null; then
+if ! command -v systemd-repart >/dev/null; then
     echo "no systemd-repart" >/skipped
     exit 0
 fi
@@ -283,7 +283,7 @@ $imgs/zzz6 : start=     4194264, size=     2097152, type=0FC63DAF-8483-4772-8E79
 $imgs/zzz7 : start=     6291416, size=       98304, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, uuid=7B93D1F2-595D-4CE3-B0B9-837FBD9E63B0, name=\"luks-format-copy\""
 
     loop="$(losetup -P --show --find "$imgs/zzz")"
-    udevadm wait --timeout 60 --settle "${loop:?}"
+    udevadm wait --timeout 60 --settle "${loop:?}p7"
 
     volume="test-repart-$RANDOM"
 
@@ -771,6 +771,88 @@ EOF
     systemd-dissect "$imgs/verity" --root-hash "$roothash"
     systemd-dissect "$imgs/verity" --root-hash "$roothash" -M "$imgs/mnt"
     systemd-dissect -U "$imgs/mnt"
+}
+
+testcase_free_area_calculation() {
+    local defs imgs output
+
+    if ! command -v mksquashfs >/dev/null; then
+        echo "Skipping free area calculation test without squashfs."
+        return
+    fi
+
+    defs="$(mktemp --directory "/tmp/test-repart.defs.XXXXXXXXXX")"
+    imgs="$(mktemp --directory "/var/tmp/test-repart.imgs.XXXXXXXXXX")"
+    # shellcheck disable=SC2064
+    trap "rm -rf '$defs' '$imgs'" RETURN
+    chmod a+rx "$defs"
+
+    # https://github.com/systemd/systemd/issues/28225
+    echo "*** free area calculation ***"
+
+    tee "$defs/00-ESP.conf" <<EOF
+[Partition]
+Type         = esp
+Label        = ESP
+Format       = vfat
+
+SizeMinBytes = 128M
+SizeMaxBytes = 128M
+
+# Sufficient for testing
+CopyFiles    = /etc:/
+EOF
+
+    tee "$defs/10-os.conf" <<EOF
+[Partition]
+Type           = root-${architecture}
+Label          = test
+Format         = squashfs
+
+Minimize       = best
+# Sufficient for testing
+CopyFiles      = /etc/:/
+
+VerityMatchKey = os
+Verity         = data
+EOF
+
+    tee "$defs/11-os-verity.conf" <<EOF
+[Partition]
+Type           = root-${architecture}-verity
+Label          = test
+
+Minimize       = best
+
+VerityMatchKey = os
+Verity         = hash
+EOF
+
+    # Set sector size for VFAT to 512 bytes because there will not be enough FAT clusters otherwise
+    output1=$(SYSTEMD_REPART_MKFS_OPTIONS_VFAT="-S 512" systemd-repart \
+                                              --definitions="$defs" \
+                                              --seed="$seed" \
+                                              --dry-run=no \
+                                              --empty=create \
+                                              --size=auto \
+                                              --sector-size=4096 \
+                                              --defer-partitions=esp \
+                                              --json=pretty \
+                                              "$imgs/zzz")
+
+    # The second invocation
+    output2=$(SYSTEMD_REPART_MKFS_OPTIONS_VFAT="-S 512" systemd-repart \
+                                              --definitions="$defs" \
+                                              --seed="$seed" \
+                                              --dry-run=no \
+                                              --empty=allow \
+                                              --size=auto \
+                                              --sector-size=4096 \
+                                              --defer-partitions=esp \
+                                              --json=pretty \
+                                              "$imgs/zzz")
+
+    diff -u <(echo "$output1" | grep -E "(offset|raw_size|raw_padding)") <(echo "$output2" | grep -E "(offset|raw_size|raw_padding)")
 }
 
 test_sector() {

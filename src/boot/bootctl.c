@@ -368,7 +368,7 @@ static int settle_make_entry_directory(void) {
         bool layout_type1 = use_boot_loader_spec_type1();
         if (arg_make_entry_directory < 0) { /* Automatic mode */
                 if (layout_type1) {
-                        if (arg_entry_token == ARG_ENTRY_TOKEN_MACHINE_ID) {
+                        if (arg_entry_token_type == ARG_ENTRY_TOKEN_MACHINE_ID) {
                                 r = path_is_temporary_fs("/etc/machine-id");
                                 if (r < 0)
                                         return log_debug_errno(r, "Couldn't determine whether /etc/machine-id is on a temporary file system: %m");
@@ -450,7 +450,9 @@ static const char *get_efi_arch(void) {
         if (r == -ENOENT)
                 return EFI_MACHINE_TYPE_NAME;
         if (r < 0) {
-                log_warning_errno(r, "Error reading EFI firmware word size, assuming '%i': %m", __WORDSIZE);
+                log_warning_errno(r,
+                        "Error reading EFI firmware word size, assuming machine type '%s': %m",
+                        EFI_MACHINE_TYPE_NAME);
                 return EFI_MACHINE_TYPE_NAME;
         }
 
@@ -460,9 +462,9 @@ static const char *get_efi_arch(void) {
                 return "ia32";
 
         log_warning(
-                "Unknown EFI firmware word size '%s', using default word size '%i' instead.",
+                "Unknown EFI firmware word size '%s', using machine type '%s'.",
                 platform_size,
-                __WORDSIZE);
+                EFI_MACHINE_TYPE_NAME);
 #endif
 
         return EFI_MACHINE_TYPE_NAME;
@@ -1124,7 +1126,8 @@ static int install_variables(
                 uint64_t psize,
                 sd_id128_t uuid,
                 const char *path,
-                bool first) {
+                bool first,
+                bool graceful) {
 
         uint16_t slot;
         int r;
@@ -1147,18 +1150,30 @@ static int install_variables(
                 return log_error_errno(r, "Cannot access \"%s/%s\": %m", esp_path, path);
 
         r = find_slot(uuid, path, &slot);
-        if (r < 0)
-                return log_error_errno(r,
-                                       r == -ENOENT ?
-                                       "Failed to access EFI variables. Is the \"efivarfs\" filesystem mounted?" :
-                                       "Failed to determine current boot order: %m");
+        if (r < 0) {
+                int level = graceful ? arg_quiet ? LOG_DEBUG : LOG_INFO : LOG_ERR;
+                const char *skip = graceful ? ", skipping" : "";
+
+                log_full_errno(level, r,
+                               r == -ENOENT ?
+                               "Failed to access EFI variables%s. Is the \"efivarfs\" filesystem mounted?" :
+                               "Failed to determine current boot order%s: %m", skip);
+
+                return graceful ? 0 : r;
+        }
 
         if (first || r == 0) {
                 r = efi_add_boot_option(slot, pick_efi_boot_option_description(),
                                         part, pstart, psize,
                                         uuid, path);
-                if (r < 0)
-                        return log_error_errno(r, "Failed to create EFI Boot variable entry: %m");
+                if (r < 0) {
+                        int level = graceful ? arg_quiet ? LOG_DEBUG : LOG_INFO : LOG_ERR;
+                        const char *skip = graceful ? ", skipping" : "";
+
+                        log_full_errno(level, r, "Failed to create EFI Boot variable entry%s: %m", skip);
+
+                        return graceful ? 0 : r;
+                }
 
                 log_info("Created EFI boot entry \"%s\".", pick_efi_boot_option_description());
         }
@@ -1419,7 +1434,7 @@ static int install_entry_token(void) {
 
         r = write_string_file("/etc/kernel/entry-token", arg_entry_token, WRITE_STRING_FILE_CREATE|WRITE_STRING_FILE_ATOMIC|WRITE_STRING_FILE_MKDIR_0755);
         if (r < 0)
-                return log_error_errno(r, "Failed to write entry token '%s' to /etc/kernel/entry-token", arg_entry_token);
+                return log_error_errno(r, "Failed to write entry token '%s' to /etc/kernel/entry-token: %m", arg_entry_token);
 
         return 0;
 }
@@ -2226,7 +2241,7 @@ static int verb_install(int argc, char *argv[], void *userdata) {
         }
 
         char *path = strjoina("/EFI/systemd/systemd-boot", arch, ".efi");
-        return install_variables(arg_esp_path, part, pstart, psize, uuid, path, install);
+        return install_variables(arg_esp_path, part, pstart, psize, uuid, path, install, graceful);
 }
 
 static int verb_remove(int argc, char *argv[], void *userdata) {

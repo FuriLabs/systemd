@@ -309,6 +309,9 @@ static int table_add_uid_map(
         assert(table);
         assert(add_unavailable);
 
+        if (!p)
+                return 0;
+
         for (size_t i = 0; p && i < p->n_entries; i++) {
                 UidRangeEntry *x = p->entries + i;
 
@@ -533,7 +536,8 @@ static int table_add_gid_boundaries(Table *table, const UidRange *p) {
         for (size_t i = 0; i < ELEMENTSOF(uid_range_table); i++) {
                 _cleanup_free_ char *name = NULL, *comment = NULL;
 
-                if (!uid_range_covers(p, uid_range_table[i].first, uid_range_table[i].last))
+                if (!uid_range_covers(p, uid_range_table[i].first,
+                                      uid_range_table[i].last - uid_range_table[i].first + 1))
                         continue;
 
                 name = strjoin(special_glyph(SPECIAL_GLYPH_ARROW_DOWN),
@@ -961,7 +965,7 @@ static int display_services(int argc, char *argv[], void *userdata) {
                         return table_log_print_error(r);
         }
 
-        if (arg_legend) {
+        if (arg_legend && arg_output != OUTPUT_JSON) {
                 if (table_get_rows(t) > 1)
                         printf("\n%zu services listed.\n", table_get_rows(t) - 1);
                 else
@@ -1037,6 +1041,7 @@ static int ssh_authorized_keys(int argc, char *argv[], void *userdata) {
                         log_debug("Chain invoking: %s", s);
                 }
 
+                fflush(stdout);
                 execv(chain_invocation[0], chain_invocation);
                 if (errno == ENOENT) /* Let's handle ENOENT gracefully */
                         log_warning_errno(errno, "Chain executable '%s' does not exist, ignoring chain invocation.", chain_invocation[0]);
@@ -1147,6 +1152,10 @@ static int parse_argv(int argc, char *argv[]) {
                 strv_free(arg_services);
                 arg_services = l;
         }
+
+        /* Resetting to 0 forces the invocation of an internal initialization routine of getopt_long()
+         * that checks for GNU extensions in optstring ('-' or '+' at the beginning). */
+        optind = 0;
 
         for (;;) {
                 int c;

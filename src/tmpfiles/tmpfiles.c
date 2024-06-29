@@ -231,6 +231,7 @@ static inline bool ERRNO_IS_NOINFO(int r) {
         return IN_SET(abs(r),
                       EUNATCH,    /* os-release or machine-id missing */
                       ENOMEDIUM,  /* machine-id or another file empty */
+                      ENOPKG,     /* machine-id is uninitialized */
                       ENXIO);     /* env var is unset */
 }
 
@@ -2133,7 +2134,7 @@ static int item_do(
                 fdaction_t action) {
 
         struct stat st;
-        int r = 0, q;
+        int r = 0, q = 0;
 
         assert(i);
         assert(path);
@@ -2167,9 +2168,10 @@ static int item_do(
                                 continue;
 
                         de_fd = openat(fd, de->d_name, O_NOFOLLOW|O_CLOEXEC|O_PATH);
-                        if (de_fd < 0)
-                                q = log_error_errno(errno, "Failed to open() file '%s': %m", de->d_name);
-                        else {
+                        if (de_fd < 0) {
+                                if (errno != ENOENT)
+                                        q = log_error_errno(errno, "Failed to open file '%s': %m", de->d_name);
+                        } else {
                                 _cleanup_free_ char *de_path = NULL;
 
                                 de_path = path_join(path, de->d_name);
@@ -2283,7 +2285,7 @@ static int rm_if_wrong_type_safe(
                 return 0;
 
         (void) fd_get_path(parent_fd, &parent_name);
-        log_notice("Wrong file type 0x%x; rm -rf \"%s/%s\"", st.st_mode & S_IFMT, strna(parent_name), name);
+        log_notice("Wrong file type 0o%o; rm -rf \"%s/%s\"", st.st_mode & S_IFMT, strna(parent_name), name);
 
         /* If the target of the symlink was the wrong type, the link needs to be removed instead of the
          * target, so make sure it is identified as a link and not a directory. */
@@ -3311,12 +3313,6 @@ static int parse_line(
                         *invalid_config = true;
                         return log_syntax(NULL, LOG_ERR, fname, line, SYNTHETIC_ERRNO(EBADMSG), "base64 decoding not supported for symlink targets.");
                 }
-
-                if (!i.argument) {
-                        i.argument = path_join("/usr/share/factory", i.path);
-                        if (!i.argument)
-                                return log_oom();
-                }
                 break;
 
         case WRITE_FILE:
@@ -3331,34 +3327,6 @@ static int parse_line(
                         *invalid_config = true;
                         return log_syntax(NULL, LOG_ERR, fname, line, SYNTHETIC_ERRNO(EBADMSG), "base64 decoding not supported for copy sources.");
                 }
-
-                if (!i.argument) {
-                        i.argument = path_join("/usr/share/factory", i.path);
-                        if (!i.argument)
-                                return log_oom();
-                } else if (!path_is_absolute(i.argument)) {
-                        *invalid_config = true;
-                        return log_syntax(NULL, LOG_ERR, fname, line, SYNTHETIC_ERRNO(EBADMSG), "Source path '%s' is not absolute.", i.argument);
-
-                }
-
-                if (!empty_or_root(arg_root)) {
-                        char *p;
-
-                        p = path_join(arg_root, i.argument);
-                        if (!p)
-                                return log_oom();
-                        free_and_replace(i.argument, p);
-                }
-
-                path_simplify(i.argument);
-
-                if (laccess(i.argument, F_OK) == -ENOENT) {
-                        /* Silently skip over lines where the source file is missing. */
-                        log_syntax(NULL, LOG_DEBUG, fname, line, 0, "Copy source path '%s' does not exist, skipping line.", i.argument);
-                        return 0;
-                }
-
                 break;
 
         case CREATE_CHAR_DEVICE:
@@ -3450,6 +3418,49 @@ static int parse_line(
                                 *invalid_config = true;
                         return log_syntax(NULL, LOG_ERR, fname, line, r, "Failed to substitute specifiers in argument: %m");
                 }
+        }
+
+        switch (i.type) {
+        case CREATE_SYMLINK:
+                if (!i.argument) {
+                        i.argument = path_join("/usr/share/factory", i.path);
+                        if (!i.argument)
+                                return log_oom();
+                }
+                break;
+
+        case COPY_FILES:
+                if (!i.argument) {
+                        i.argument = path_join("/usr/share/factory", i.path);
+                        if (!i.argument)
+                                return log_oom();
+                } else if (!path_is_absolute(i.argument)) {
+                        *invalid_config = true;
+                        return log_syntax(NULL, LOG_ERR, fname, line, SYNTHETIC_ERRNO(EBADMSG), "Source path '%s' is not absolute.", i.argument);
+
+                }
+
+                if (!empty_or_root(arg_root)) {
+                        char *p;
+
+                        p = path_join(arg_root, i.argument);
+                        if (!p)
+                                return log_oom();
+                        free_and_replace(i.argument, p);
+                }
+
+                path_simplify(i.argument);
+
+                if (laccess(i.argument, F_OK) == -ENOENT) {
+                        /* Silently skip over lines where the source file is missing. */
+                        log_syntax(NULL, LOG_DEBUG, fname, line, 0, "Copy source path '%s' does not exist, skipping line.", i.argument);
+                        return 0;
+                }
+
+                break;
+
+        default:
+                break;
         }
 
         if (from_cred) {
@@ -3799,10 +3810,12 @@ static int parse_argv(int argc, char *argv[]) {
                         break;
 
                 case ARG_REPLACE:
-                        if (!path_is_absolute(optarg) ||
-                            !endswith(optarg, ".conf"))
+                        if (!path_is_absolute(optarg))
                                 return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
-                                                       "The argument to --replace= must an absolute path to a config file");
+                                                       "The argument to --replace= must be an absolute path.");
+                        if (!endswith(optarg, ".conf"))
+                                return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
+                                                       "The argument to --replace= must have the extension '.conf'.");
 
                         arg_replace = optarg;
                         break;

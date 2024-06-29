@@ -286,7 +286,7 @@ int bind_user_prepare(
                 if (!sd)
                         return log_oom();
 
-                cm = reallocarray(*custom_mounts, sizeof(CustomMount), *n_custom_mounts + 1);
+                cm = reallocarray(*custom_mounts, *n_custom_mounts + 1, sizeof(CustomMount));
                 if (!cm)
                         return log_oom();
 
@@ -394,7 +394,7 @@ int bind_user_setup(
 
         r = userns_mkdir(root, "/run/host/home", 0755, 0, 0);
         if (r < 0)
-                return log_error_errno(r, "Failed to create /run/host/userdb: %m");
+                return log_error_errno(r, "Failed to create /run/host/home: %m");
 
         r = userns_mkdir(root, "/run/host/userdb", 0755, 0, 0);
         if (r < 0)

@@ -1282,12 +1282,12 @@ static int bus_append_execute_property(sd_bus_message *m, const char *field, con
                         if (r < 0)
                                 return log_error_errno(r, "Failed to parse resource limit: %s", eq);
 
-                        r = sd_bus_message_append(m, "(sv)", field, "t", l.rlim_max);
+                        r = sd_bus_message_append(m, "(sv)", field, "t", (uint64_t) l.rlim_max);
                         if (r < 0)
                                 return bus_log_create_error(r);
 
                         sn = strjoina(field, "Soft");
-                        r = sd_bus_message_append(m, "(sv)", sn, "t", l.rlim_cur);
+                        r = sd_bus_message_append(m, "(sv)", sn, "t", (uint64_t) l.rlim_cur);
                         if (r < 0)
                                 return bus_log_create_error(r);
 
@@ -2030,7 +2030,7 @@ static int bus_append_execute_property(sd_bus_message *m, const char *field, con
                                 return bus_log_create_error(r);
 
                         STRV_FOREACH_PAIR(source, destination, symlinks) {
-                                r = sd_bus_message_append(m, "(sst)", *source, *destination, 0);
+                                r = sd_bus_message_append(m, "(sst)", *source, *destination, UINT64_C(0));
                                 if (r < 0)
                                         return bus_log_create_error(r);
                         }
@@ -2720,7 +2720,7 @@ int unit_load_state(sd_bus *bus, const char *name, char **load_state) {
         if (!path)
                 return log_oom();
 
-        /* This function warns on it's own, because otherwise it'd be awkward to pass
+        /* This function warns on its own, because otherwise it'd be awkward to pass
          * the dbus error message around. */
 
         r = sd_bus_get_property_string(

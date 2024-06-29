@@ -13,13 +13,15 @@
 #include "log.h"
 #include "macro.h"
 #include "missing_prctl.h"
+#include "missing_threads.h"
 #include "parse-util.h"
 #include "user-util.h"
 #include "util.h"
 
 int have_effective_cap(int value) {
         _cleanup_cap_free_ cap_t cap = NULL;
-        cap_flag_value_t fv;
+        cap_flag_value_t fv = CAP_CLEAR; /* To avoid false-positive use-of-uninitialized-value error reported
+                                          * by fuzzers. */
 
         cap = cap_get_proc();
         if (!cap)

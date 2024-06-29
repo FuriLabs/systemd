@@ -223,12 +223,17 @@ int icmp6_send_router_solicitation(int s, const struct ether_addr *ether_addr) {
         return 0;
 }
 
-int icmp6_receive(int fd, void *iov_base, size_t iov_len,
-                  struct in6_addr *dst, triple_timestamp *timestamp) {
+int icmp6_receive(
+                int fd,
+                void *iov_base,
+                size_t iov_len,
+                struct in6_addr *ret_sender,
+                triple_timestamp *ret_timestamp) {
+
         assert_se(read (fd, iov_base, iov_len) == (ssize_t)iov_len);
 
-        if (timestamp)
-                triple_timestamp_get(timestamp);
+        if (ret_timestamp)
+                triple_timestamp_get(ret_timestamp);
 
         return 0;
 }
@@ -327,7 +332,7 @@ TEST(ra) {
         assert_se(sd_event_source_set_io_fd_own(recv_router_advertisement, true) >= 0);
 
         assert_se(sd_event_add_time_relative(e, NULL, CLOCK_BOOTTIME,
-                                             2 * USEC_PER_SEC, 0,
+                                             30 * USEC_PER_SEC, 0,
                                              NULL, INT_TO_PTR(-ETIMEDOUT)) >= 0);
 
         assert_se(sd_radv_start(ra) >= 0);

@@ -48,6 +48,7 @@
 #include "sync-util.h"
 #include "tmpfile-util.h"
 #include "uid-alloc-range.h"
+#include "unaligned.h"
 #include "user-util.h"
 
 /* The maximum size up to which we process coredumps. We use 1G on 32bit systems, and 32G on 64bit systems */
@@ -339,95 +340,65 @@ static int make_filename(const Context *context, char **ret) {
         return 0;
 }
 
-static int parse_auxv64(
-                const uint64_t *auxv,
-                size_t size_bytes,
-                int *at_secure,
-                uid_t *uid,
-                uid_t *euid,
-                gid_t *gid,
-                gid_t *egid) {
+#define _DEFINE_PARSE_AUXV(size, type, unaligned_read)                  \
+        static int parse_auxv##size(                                    \
+                        const void *auxv,                               \
+                        size_t size_bytes,                              \
+                        int *at_secure,                                 \
+                        uid_t *uid,                                     \
+                        uid_t *euid,                                    \
+                        gid_t *gid,                                     \
+                        gid_t *egid) {                                  \
+                                                                        \
+                assert(auxv || size_bytes == 0);                        \
+                                                                        \
+                if (size_bytes % (2 * sizeof(type)) != 0)               \
+                        return log_warning_errno(SYNTHETIC_ERRNO(EIO),  \
+                                                 "Incomplete auxv structure (%zu bytes).", \
+                                                 size_bytes);           \
+                                                                        \
+                size_t words = size_bytes / sizeof(type);               \
+                                                                        \
+                /* Note that we set output variables even on error. */  \
+                                                                        \
+                for (size_t i = 0; i + 1 < words; i += 2) {             \
+                        type key, val;                                  \
+                                                                        \
+                        key = unaligned_read((uint8_t*) auxv + i * sizeof(type)); \
+                        val = unaligned_read((uint8_t*) auxv + (i + 1) * sizeof(type)); \
+                                                                        \
+                        switch (key) {                                  \
+                        case AT_SECURE:                                 \
+                                *at_secure = val != 0;                  \
+                                break;                                  \
+                        case AT_UID:                                    \
+                                *uid = val;                             \
+                                break;                                  \
+                        case AT_EUID:                                   \
+                                *euid = val;                            \
+                                break;                                  \
+                        case AT_GID:                                    \
+                                *gid = val;                             \
+                                break;                                  \
+                        case AT_EGID:                                   \
+                                *egid = val;                            \
+                                break;                                  \
+                        case AT_NULL:                                   \
+                                if (val != 0)                           \
+                                        goto error;                     \
+                                return 0;                               \
+                        }                                               \
+                }                                                       \
+        error:                                                          \
+                return log_warning_errno(SYNTHETIC_ERRNO(ENODATA),      \
+                                         "AT_NULL terminator not found, cannot parse auxv structure."); \
+        }
 
-        assert(auxv || size_bytes == 0);
+#define DEFINE_PARSE_AUXV(size)\
+        _DEFINE_PARSE_AUXV(size, uint##size##_t, unaligned_read_ne##size)
 
-        if (size_bytes % (2 * sizeof(uint64_t)) != 0)
-                return log_warning_errno(SYNTHETIC_ERRNO(EIO), "Incomplete auxv structure (%zu bytes).", size_bytes);
-
-        size_t words = size_bytes / sizeof(uint64_t);
-
-        /* Note that we set output variables even on error. */
-
-        for (size_t i = 0; i + 1 < words; i += 2)
-                switch (auxv[i]) {
-                case AT_SECURE:
-                        *at_secure = auxv[i + 1] != 0;
-                        break;
-                case AT_UID:
-                        *uid = auxv[i + 1];
-                        break;
-                case AT_EUID:
-                        *euid = auxv[i + 1];
-                        break;
-                case AT_GID:
-                        *gid = auxv[i + 1];
-                        break;
-                case AT_EGID:
-                        *egid = auxv[i + 1];
-                        break;
-                case AT_NULL:
-                        if (auxv[i + 1] != 0)
-                                goto error;
-                        return 0;
-                }
- error:
-        return log_warning_errno(SYNTHETIC_ERRNO(ENODATA),
-                                 "AT_NULL terminator not found, cannot parse auxv structure.");
-}
-
-static int parse_auxv32(
-                const uint32_t *auxv,
-                size_t size_bytes,
-                int *at_secure,
-                uid_t *uid,
-                uid_t *euid,
-                gid_t *gid,
-                gid_t *egid) {
-
-        assert(auxv || size_bytes == 0);
-
-        size_t words = size_bytes / sizeof(uint32_t);
-
-        if (size_bytes % (2 * sizeof(uint32_t)) != 0)
-                return log_warning_errno(SYNTHETIC_ERRNO(EIO), "Incomplete auxv structure (%zu bytes).", size_bytes);
-
-        /* Note that we set output variables even on error. */
-
-        for (size_t i = 0; i + 1 < words; i += 2)
-                switch (auxv[i]) {
-                case AT_SECURE:
-                        *at_secure = auxv[i + 1] != 0;
-                        break;
-                case AT_UID:
-                        *uid = auxv[i + 1];
-                        break;
-                case AT_EUID:
-                        *euid = auxv[i + 1];
-                        break;
-                case AT_GID:
-                        *gid = auxv[i + 1];
-                        break;
-                case AT_EGID:
-                        *egid = auxv[i + 1];
-                        break;
-                case AT_NULL:
-                        if (auxv[i + 1] != 0)
-                                goto error;
-                        return 0;
-                }
- error:
-        return log_warning_errno(SYNTHETIC_ERRNO(ENODATA),
-                                 "AT_NULL terminator not found, cannot parse auxv structure.");
-}
+DEFINE_PARSE_AUXV(32);
+DEFINE_PARSE_AUXV(64);
 
 static int grant_user_access(int core_fd, const Context *context) {
         int at_secure = -1;
@@ -464,11 +435,11 @@ static int grant_user_access(int core_fd, const Context *context) {
                                       "Core file has non-native endianness, not adjusting permissions.");
 
         if (elf[EI_CLASS] == ELFCLASS64)
-                r = parse_auxv64((const uint64_t*) context->meta[META_PROC_AUXV],
+                r = parse_auxv64(context->meta[META_PROC_AUXV],
                                  context->meta_size[META_PROC_AUXV],
                                  &at_secure, &uid, &euid, &gid, &egid);
         else
-                r = parse_auxv32((const uint32_t*) context->meta[META_PROC_AUXV],
+                r = parse_auxv32(context->meta[META_PROC_AUXV],
                                  context->meta_size[META_PROC_AUXV],
                                  &at_secure, &uid, &euid, &gid, &egid);
         if (r < 0)
@@ -704,14 +675,15 @@ static int allocate_journal_field(int fd, size_t size, char **ret, size_t *ret_s
                 return log_warning_errno(errno, "Failed to seek: %m");
 
         field = malloc(9 + size);
-        if (!field) {
-                log_warning("Failed to allocate memory for coredump, coredump will not be stored.");
-                return -ENOMEM;
-        }
+        if (!field)
+                return log_warning_errno(SYNTHETIC_ERRNO(ENOMEM),
+                                         "Failed to allocate memory for coredump, coredump will not be stored.");
 
         memcpy(field, "COREDUMP=", 9);
 
-        n = read(fd, field + 9, size);
+        /* NB: simple read() would fail for overly large coredumps, since read() on Linux can only deal with
+         * 0x7ffff000 bytes max. Hence call things in a loop. */
+        n = loop_read(fd, field + 9, size, /* do_poll= */ false);
         if (n < 0)
                 return log_error_errno((int) n, "Failed to read core data: %m");
         if ((size_t) n < size)
@@ -930,10 +902,9 @@ static int submit_coredump(
         _cleanup_close_ int coredump_fd = -1, coredump_node_fd = -1;
         _cleanup_free_ char *filename = NULL, *coredump_data = NULL;
         _cleanup_free_ char *stacktrace = NULL;
-        char *core_message;
         const char *module_name;
         uint64_t coredump_size = UINT64_MAX, coredump_compressed_size = UINT64_MAX;
-        bool truncated = false;
+        bool truncated = false, written = false;
         JsonVariant *module_json;
         int r;
 
@@ -945,60 +916,69 @@ static int submit_coredump(
         (void) coredump_vacuum(-1, arg_keep_free, arg_max_use);
 
         /* Always stream the coredump to disk, if that's possible */
-        r = save_external_coredump(context, input_fd,
-                                   &filename, &coredump_node_fd, &coredump_fd,
-                                   &coredump_size, &coredump_compressed_size, &truncated);
-        if (r < 0)
-                /* Skip whole core dumping part */
-                goto log;
+        written = save_external_coredump(
+                        context, input_fd,
+                        &filename, &coredump_node_fd, &coredump_fd,
+                        &coredump_size, &coredump_compressed_size, &truncated) >= 0;
+        if (written) {
+                /* If we could write it to disk we can now process it. */
+                /* If we don't want to keep the coredump on disk, remove it now, as later on we
+                 * will lack the privileges for it. However, we keep the fd to it, so that we can
+                 * still process it and log it. */
+                r = maybe_remove_external_coredump(filename, coredump_node_fd >= 0 ? coredump_compressed_size : coredump_size);
+                if (r < 0)
+                        return r;
+                if (r == 0)
+                        (void) iovw_put_string_field(iovw, "COREDUMP_FILENAME=", filename);
+                else if (arg_storage == COREDUMP_STORAGE_EXTERNAL)
+                        log_info("The core will not be stored: size %"PRIu64" is greater than %"PRIu64" (the configured maximum)",
+                                 coredump_node_fd >= 0 ? coredump_compressed_size : coredump_size, arg_external_size_max);
 
-        /* If we don't want to keep the coredump on disk, remove it now, as later on we
-         * will lack the privileges for it. However, we keep the fd to it, so that we can
-         * still process it and log it. */
-        r = maybe_remove_external_coredump(filename, coredump_node_fd >= 0 ? coredump_compressed_size : coredump_size);
-        if (r < 0)
-                return r;
-        if (r == 0)
-                (void) iovw_put_string_field(iovw, "COREDUMP_FILENAME=", filename);
-        else if (arg_storage == COREDUMP_STORAGE_EXTERNAL)
-                log_info("The core will not be stored: size %"PRIu64" is greater than %"PRIu64" (the configured maximum)",
-                         coredump_node_fd >= 0 ? coredump_compressed_size : coredump_size, arg_external_size_max);
+                /* Vacuum again, but exclude the coredump we just created */
+                (void) coredump_vacuum(coredump_node_fd >= 0 ? coredump_node_fd : coredump_fd, arg_keep_free, arg_max_use);
+        }
 
-        /* Vacuum again, but exclude the coredump we just created */
-        (void) coredump_vacuum(coredump_node_fd >= 0 ? coredump_node_fd : coredump_fd, arg_keep_free, arg_max_use);
-
-        /* Now, let's drop privileges to become the user who owns the segfaulted process
-         * and allocate the coredump memory under the user's uid. This also ensures that
-         * the credentials journald will see are the ones of the coredumping user, thus
-         * making sure the user gets access to the core dump. Let's also get rid of all
-         * capabilities, if we run as root, we won't need them anymore. */
+        /* Now, let's drop privileges to become the user who owns the segfaulted process and allocate the
+         * coredump memory under the user's uid. This also ensures that the credentials journald will see are
+         * the ones of the coredumping user, thus making sure the user gets access to the core dump. Let's
+         * also get rid of all capabilities, if we run as root, we won't need them anymore. */
         r = change_uid_gid(context);
         if (r < 0)
                 return log_error_errno(r, "Failed to drop privileges: %m");
 
-        /* Try to get a stack trace if we can */
-        if (coredump_size > arg_process_size_max)
-                log_debug("Not generating stack trace: core size %"PRIu64" is greater "
-                          "than %"PRIu64" (the configured maximum)",
-                          coredump_size, arg_process_size_max);
-        else if (coredump_fd >= 0) {
-                bool skip = startswith(context->meta[META_COMM], "systemd-coredum"); /* COMM is 16 bytes usually */
+        if (written) {
+                /* Try to get a stack trace if we can */
+                if (coredump_size > arg_process_size_max)
+                        log_debug("Not generating stack trace: core size %"PRIu64" is greater "
+                                  "than %"PRIu64" (the configured maximum)",
+                                  coredump_size, arg_process_size_max);
+                else if (coredump_fd >= 0) {
+                        bool skip = startswith(context->meta[META_COMM], "systemd-coredum"); /* COMM is 16 bytes usually */
 
-                (void) parse_elf_object(coredump_fd,
-                                        context->meta[META_EXE],
-                                        /* fork_disable_dump= */ skip, /* avoid loops */
-                                        &stacktrace,
-                                        &json_metadata);
+                        (void) parse_elf_object(coredump_fd,
+                                                context->meta[META_EXE],
+                                                /* fork_disable_dump= */ skip, /* avoid loops */
+                                                &stacktrace,
+                                                &json_metadata);
+                }
         }
 
-log:
-        core_message = strjoina("Process ", context->meta[META_ARGV_PID],
-                                " (", context->meta[META_COMM], ") of user ",
-                                context->meta[META_ARGV_UID], " dumped core.",
-                                context->is_journald && filename ? "\nCoredump diverted to " : NULL,
-                                context->is_journald && filename ? filename : NULL);
+        _cleanup_free_ char *core_message = NULL;
+        core_message = strjoin(
+                        "Process ", context->meta[META_ARGV_PID],
+                        " (", context->meta[META_COMM],
+                        ") of user ", context->meta[META_ARGV_UID],
+                        written ? " dumped core." : " terminated abnormally without generating a coredump.");
+        if (!core_message)
+                return log_oom();
 
-        core_message = strjoina(core_message, stacktrace ? "\n\n" : NULL, stacktrace);
+        if (context->is_journald && filename)
+                if (!strextend(&core_message, "\nCoredump diverted to ", filename))
+                        return log_oom();
+
+        if (stacktrace)
+                if (!strextend(&core_message, "\n\n", stacktrace))
+                        return log_oom();
 
         if (context->is_journald)
                 /* We might not be able to log to the journal, so let's always print the message to another
@@ -1560,7 +1540,7 @@ static int process_backtrace(int argc, char *argv[]) {
 
                 r = iovw_put_string_field(iovw, "MESSAGE=", message);
                 if (r < 0)
-                        return r;
+                        goto finish;
         } else {
                 /* The imported iovecs are not supposed to be freed by us so let's store
                  * them at the end of the array so we can skip them while freeing the

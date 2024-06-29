@@ -213,6 +213,7 @@ static int block_get_size_by_path(const char *path, uint64_t *ret) {
 static int run_fsck(const char *node, const char *fstype) {
         int r, exit_status;
         pid_t fsck_pid;
+        _cleanup_free_ char *fsck_path = NULL;
 
         assert(node);
         assert(fstype);
@@ -225,6 +226,14 @@ static int run_fsck(const char *node, const char *fstype) {
                 return 0;
         }
 
+        r = find_executable("fsck", &fsck_path);
+        /* We proceed anyway if we can't determine whether the fsck
+         * binary for some specific fstype exists,
+         * but the lack of the main fsck binary should be considered
+         * an error. */
+        if (r < 0)
+                return log_error_errno(r, "Cannot find fsck binary: %m");
+
         r = safe_fork("(fsck)",
                       FORK_RESET_SIGNALS|FORK_RLIMIT_NOFILE_SAFE|FORK_DEATHSIG|FORK_LOG|FORK_STDOUT_TO_STDERR|FORK_CLOSE_ALL_FDS,
                       &fsck_pid);
@@ -232,7 +241,7 @@ static int run_fsck(const char *node, const char *fstype) {
                 return r;
         if (r == 0) {
                 /* Child */
-                execl("/sbin/fsck", "/sbin/fsck", "-aTl", node, NULL);
+                execl(fsck_path, fsck_path, "-aTl", node, NULL);
                 log_open();
                 log_error_errno(errno, "Failed to execute fsck: %m");
                 _exit(FSCK_OPERATIONAL_ERROR);
@@ -599,7 +608,7 @@ static int fs_validate(
                 sd_id128_t *ret_found_uuid) {
 
         _cleanup_free_ char *fstype = NULL;
-        sd_id128_t u;
+        sd_id128_t u = SD_ID128_NULL; /* avoid false maybe-unitialized warning */
         int r;
 
         assert(dm_node);
@@ -1230,7 +1239,7 @@ int home_setup_luks(
                 PasswordCache *cache,
                 UserRecord **ret_luks_home) {
 
-        sd_id128_t found_partition_uuid, found_fs_uuid, found_luks_uuid = SD_ID128_NULL;
+        sd_id128_t found_partition_uuid, found_fs_uuid = SD_ID128_NULL, found_luks_uuid = SD_ID128_NULL;
         _cleanup_(user_record_unrefp) UserRecord *luks_home = NULL;
         _cleanup_(erase_and_freep) void *volume_key = NULL;
         size_t volume_key_size = 0;
@@ -2725,6 +2734,43 @@ static int prepare_resize_partition(
         return 1;
 }
 
+static int get_maximum_partition_size(
+                int fd,
+                struct fdisk_partition *p,
+                uint64_t *ret_maximum_partition_size) {
+
+        _cleanup_(fdisk_unref_contextp) struct fdisk_context *c = NULL;
+        uint64_t start_lba, start, last_lba, end;
+        int r;
+
+        assert(fd >= 0);
+        assert(p);
+        assert(ret_maximum_partition_size);
+
+        c = fdisk_new_context();
+        if (!c)
+                return log_oom();
+
+        r = fdisk_assign_device(c, FORMAT_PROC_FD_PATH(fd), 0);
+        if (r < 0)
+                return log_error_errno(r, "Failed to open device: %m");
+
+        start_lba = fdisk_partition_get_start(p);
+        assert(start_lba <= UINT64_MAX/512);
+        start = start_lba * 512;
+
+        last_lba = fdisk_get_last_lba(c); /* One sector before boundary where usable space ends */
+        assert(last_lba < UINT64_MAX/512);
+        end = DISK_SIZE_ROUND_DOWN((last_lba + 1) * 512); /* Round down to multiple of 4K */
+
+        if (start > end)
+                return log_error_errno(SYNTHETIC_ERRNO(EBADMSG), "Last LBA is before partition start.");
+
+        *ret_maximum_partition_size = DISK_SIZE_ROUND_DOWN(end - start);
+
+        return 1;
+}
+
 static int ask_cb(struct fdisk_context *c, struct fdisk_ask *ask, void *userdata) {
         char *result;
 
@@ -3193,6 +3239,17 @@ int home_resize_luks(
             setup->partition_offset + setup->partition_size > old_image_size)
                 return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Old partition doesn't fit in backing storage, refusing.");
 
+        /* Get target partition information in here for new_partition_size calculation */
+        r = prepare_resize_partition(
+                        image_fd,
+                        setup->partition_offset,
+                        setup->partition_size,
+                        &disk_uuid,
+                        &table,
+                        &partition);
+        if (r < 0)
+                return r;
+
         if (S_ISREG(st.st_mode)) {
                 uint64_t partition_table_extra, largest_size;
 
@@ -3215,9 +3272,13 @@ int home_resize_luks(
                         new_partition_size = 0;
                         intention = INTENTION_SHRINK;
                 } else {
-                        uint64_t new_partition_size_rounded;
+                        uint64_t new_partition_size_rounded = DISK_SIZE_ROUND_DOWN(h->disk_size);
 
-                        new_partition_size_rounded = DISK_SIZE_ROUND_DOWN(h->disk_size);
+                        if (h->disk_size == UINT64_MAX && partition) {
+                                r = get_maximum_partition_size(image_fd, partition, &new_partition_size_rounded);
+                                if (r < 0)
+                                        return r;
+                        }
 
                         if (setup->partition_size >= new_partition_size_rounded &&
                             setup->partition_size <= h->disk_size) {
@@ -3310,16 +3371,6 @@ int home_resize_luks(
                  FORMAT_BYTES(old_fs_size),
                  special_glyph(SPECIAL_GLYPH_ARROW_RIGHT),
                  FORMAT_BYTES(new_fs_size));
-
-        r = prepare_resize_partition(
-                        image_fd,
-                        setup->partition_offset,
-                        setup->partition_size,
-                        &disk_uuid,
-                        &table,
-                        &partition);
-        if (r < 0)
-                return r;
 
         if (new_fs_size > old_fs_size) { /* → Grow */
 

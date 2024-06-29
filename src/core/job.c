@@ -805,13 +805,12 @@ static int job_perform_on_unit(Job **j) {
         Manager *m;
         JobType t;
         Unit *u;
+        bool wait_only;
         int r;
 
-        /* While we execute this operation the job might go away (for
-         * example: because it finishes immediately or is replaced by
-         * a new, conflicting job.) To make sure we don't access a
-         * freed job later on we store the id here, so that we can
-         * verify the job is still valid. */
+        /* While we execute this operation the job might go away (for example: because it finishes immediately
+         * or is replaced by a new, conflicting job). To make sure we don't access a freed job later on we
+         * store the id here, so that we can verify the job is still valid. */
 
         assert(j);
         assert(*j);
@@ -825,6 +824,7 @@ static int job_perform_on_unit(Job **j) {
         switch (t) {
                 case JOB_START:
                         r = unit_start(u, a);
+                        wait_only = r == -EBADR; /* If the unit type does not support starting, then simply wait. */
                         break;
 
                 case JOB_RESTART:
@@ -832,24 +832,28 @@ static int job_perform_on_unit(Job **j) {
                         _fallthrough_;
                 case JOB_STOP:
                         r = unit_stop(u);
+                        wait_only = r == -EBADR; /* If the unit type does not support stopping, then simply wait. */
                         break;
 
                 case JOB_RELOAD:
                         r = unit_reload(u);
+                        wait_only = false; /* A clear error is generated if reload is not supported. */
                         break;
 
                 default:
                         assert_not_reached();
         }
 
-        /* Log if the job still exists and the start/stop/reload function actually did something. Note that this means
-         * for units for which there's no 'activating' phase (i.e. because we transition directly from 'inactive' to
-         * 'active') we'll possibly skip the "Starting..." message. */
+        /* Log if the job still exists and the start/stop/reload function actually did something or we're
+         * only waiting for unit status change (common for device units). The latter ensures that job start
+         * messages for device units are correctly shown. Note that if the job disappears too quickly, e.g.
+         * for units for which there's no 'activating' phase (i.e. because we transition directly from
+         * 'inactive' to 'active'), we'll possibly skip the "Starting..." message. */
         *j = manager_get_job(m, id);
-        if (*j && r > 0)
+        if (*j && (r > 0 || wait_only))
                 job_emit_start_message(u, id, t);
 
-        return r;
+        return wait_only ? 0 : r;
 }
 
 int job_run_and_invalidate(Job *j) {
@@ -891,13 +895,6 @@ int job_run_and_invalidate(Job *j) {
                 case JOB_START:
                 case JOB_STOP:
                 case JOB_RESTART:
-                        r = job_perform_on_unit(&j);
-
-                        /* If the unit type does not support starting/stopping, then simply wait. */
-                        if (r == -EBADR)
-                                r = 0;
-                        break;
-
                 case JOB_RELOAD:
                         r = job_perform_on_unit(&j);
                         break;
@@ -1001,7 +998,7 @@ int job_finish_and_invalidate(Job *j, JobResult result, bool recursive, bool alr
         }
 
         /* A special check to make sure we take down anything RequisiteOf= if we aren't active. This is when
-         * the verify-active job merges with a satisfying job type, and then loses it's invalidation effect,
+         * the verify-active job merges with a satisfying job type, and then loses its invalidation effect,
          * as the result there is JOB_DONE for the start job we merged into, while we should be failing the
          * depending job if the said unit isn't in fact active. Oneshots are an example of this, where going
          * directly from activating to inactive is success.
@@ -1050,6 +1047,12 @@ finish:
                         job_add_to_run_queue(other->job);
                         job_add_to_gc_queue(other->job);
                 }
+
+        /* Ensure that when an upheld/unneeded/bound unit activation job fails we requeue it, if it still
+         * necessary. If there are no state changes in the triggerer, it would not be retried otherwise. */
+        unit_submit_to_start_when_upheld_queue(u);
+        unit_submit_to_stop_when_bound_queue(u);
+        unit_submit_to_stop_when_unneeded_queue(u);
 
         manager_check_finished(u->manager);
 

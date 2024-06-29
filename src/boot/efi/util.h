@@ -46,12 +46,12 @@ static inline void freep(void *p) {
 _malloc_ _alloc_(1) _returns_nonnull_ _warn_unused_result_
 static inline void *xmalloc(size_t size) {
         void *p;
-        assert_se(BS->AllocatePool(EfiBootServicesData, size, &p) == EFI_SUCCESS);
+        assert_se(BS->AllocatePool(EfiLoaderData, size, &p) == EFI_SUCCESS);
         return p;
 }
 
 _malloc_ _alloc_(1, 2) _returns_nonnull_ _warn_unused_result_
-static inline void *xmalloc_multiply(size_t size, size_t n) {
+static inline void *xmalloc_multiply(size_t n, size_t size) {
         assert_se(!__builtin_mul_overflow(size, n, &size));
         return xmalloc(size);
 }
@@ -68,7 +68,7 @@ static inline void *xrealloc(void *p, size_t old_size, size_t new_size) {
 }
 
 #define xpool_print(fmt, ...) ((char16_t *) ASSERT_SE_PTR(PoolPrint((fmt), ##__VA_ARGS__)))
-#define xnew(type, n) ((type *) xmalloc_multiply(sizeof(type), (n)))
+#define xnew(type, n) ((type *) xmalloc_multiply((n), sizeof(type)))
 
 typedef struct {
         EFI_PHYSICAL_ADDRESS addr;
@@ -117,6 +117,7 @@ char16_t *xstr8_to_path(const char *stra);
 void mangle_stub_cmdline(char16_t *cmdline);
 
 EFI_STATUS file_read(EFI_FILE *dir, const char16_t *name, UINTN off, UINTN size, char **content, UINTN *content_size);
+EFI_STATUS chunked_read(EFI_FILE *file, size_t *size, void *buf);
 
 static inline void file_closep(EFI_FILE **handle) {
         if (!*handle)

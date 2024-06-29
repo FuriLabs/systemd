@@ -46,7 +46,7 @@ static void test_should_fail(const char *p) {
 }
 
 static void test_one(const char *p) {
-        _cleanup_free_ char *with_utc;
+        _cleanup_free_ char *with_utc = NULL;
 
         with_utc = strjoin(p, " UTC");
         test_should_pass(p);
@@ -54,7 +54,7 @@ static void test_one(const char *p) {
 }
 
 static void test_one_noutc(const char *p) {
-        _cleanup_free_ char *with_utc;
+        _cleanup_free_ char *with_utc = NULL;
 
         with_utc = strjoin(p, " UTC");
         test_should_pass(p);
@@ -62,6 +62,9 @@ static void test_one_noutc(const char *p) {
 }
 
 int main(int argc, char *argv[]) {
+        /* Tests have hard-coded results that do not expect a specific timezone to be set by the caller */
+        assert_se(unsetenv("TZ") >= 0);
+
         test_setup_logging(LOG_DEBUG);
 
         test_one("17:41");

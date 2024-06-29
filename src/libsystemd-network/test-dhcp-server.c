@@ -62,7 +62,9 @@ static int test_basic(bool bind_to_interface) {
         test_pool(&address_lo, 1, 0);
 
         r = sd_dhcp_server_start(server);
-        if (r == -EPERM)
+        /* skip test if running in an environment with no full networking support, CONFIG_PACKET not
+         * compiled in kernel, nor af_packet module available. */
+        if (r == -EPERM || r == -EAFNOSUPPORT)
                 return r;
         assert_se(r >= 0);
 
@@ -138,7 +140,7 @@ static void test_message_handler(void) {
         test.option_type.code = 0;
         test.option_type.length = 0;
         test.option_type.type = 0;
-        assert_se(dhcp_server_handle_message(server, (DHCPMessage*)&test, sizeof(test)) == 0);
+        assert_se(dhcp_server_handle_message(server, (DHCPMessage*)&test, sizeof(test)) == -ENOMSG);
         test.option_type.code = SD_DHCP_OPTION_MESSAGE_TYPE;
         test.option_type.length = 1;
         test.option_type.type = DHCP_DISCOVER;

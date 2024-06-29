@@ -594,8 +594,7 @@ static int service_verify(Service *s) {
         if (s->type != SERVICE_ONESHOT && s->exec_command[SERVICE_EXEC_START]->command_next)
                 return log_unit_error_errno(UNIT(s), SYNTHETIC_ERRNO(ENOEXEC), "Service has more than one ExecStart= setting, which is only allowed for Type=oneshot services. Refusing.");
 
-        if (s->type == SERVICE_ONESHOT &&
-            !IN_SET(s->restart, SERVICE_RESTART_NO, SERVICE_RESTART_ON_FAILURE, SERVICE_RESTART_ON_ABNORMAL, SERVICE_RESTART_ON_WATCHDOG, SERVICE_RESTART_ON_ABORT))
+        if (s->type == SERVICE_ONESHOT && IN_SET(s->restart, SERVICE_RESTART_ALWAYS, SERVICE_RESTART_ON_SUCCESS))
                 return log_unit_error_errno(UNIT(s), SYNTHETIC_ERRNO(ENOEXEC), "Service has Restart= set to either always or on-success, which isn't allowed for Type=oneshot services. Refusing.");
 
         if (s->type == SERVICE_ONESHOT && !exit_status_set_is_empty(&s->restart_force_status))
@@ -981,7 +980,7 @@ static int service_load_pid_file(Service *s, bool may_warn) {
                 r = chase_symlinks(s->pid_file, NULL, 0, NULL, &fd);
         }
         if (r < 0)
-                return log_unit_full_errno(UNIT(s), prio, fd,
+                return log_unit_full_errno(UNIT(s), prio, r,
                                            "Can't open PID file %s (yet?) after %s: %m", s->pid_file, service_state_to_string(s->state));
 
         /* Let's read the PID file now that we chased it down. But we need to convert the O_PATH fd
@@ -2070,7 +2069,7 @@ static bool service_good(Service *s) {
         main_pid_ok = main_pid_good(s);
         if (main_pid_ok > 0) /* It's alive */
                 return true;
-        if (main_pid_ok == 0) /* It's dead */
+        if (main_pid_ok == 0 && s->exit_type == SERVICE_EXIT_MAIN) /* It's dead */
                 return false;
 
         /* OK, we don't know anything about the main PID, maybe
@@ -2461,6 +2460,7 @@ static void service_run_next_control(Service *s) {
                           s->control_command,
                           timeout,
                           EXEC_APPLY_SANDBOXING|EXEC_APPLY_CHROOT|EXEC_IS_CONTROL|
+                          (IN_SET(s->state, SERVICE_CONDITION, SERVICE_START_PRE, SERVICE_START, SERVICE_START_POST, SERVICE_RUNNING, SERVICE_RELOAD) ? EXEC_WRITE_CREDENTIALS : 0)|
                           (IN_SET(s->control_command_id, SERVICE_EXEC_CONDITION, SERVICE_EXEC_START_PRE, SERVICE_EXEC_STOP_POST) ? EXEC_APPLY_TTY_STDIN : 0)|
                           (IN_SET(s->control_command_id, SERVICE_EXEC_STOP, SERVICE_EXEC_STOP_POST) ? EXEC_SETENV_RESULT : 0)|
                           (IN_SET(s->control_command_id, SERVICE_EXEC_START_PRE, SERVICE_EXEC_START) ? EXEC_SETENV_MONITOR_RESULT : 0)|
@@ -2500,7 +2500,7 @@ static void service_run_next_main(Service *s) {
         r = service_spawn(s,
                           s->main_command,
                           s->timeout_start_usec,
-                          EXEC_PASS_FDS|EXEC_APPLY_SANDBOXING|EXEC_APPLY_CHROOT|EXEC_APPLY_TTY_STDIN|EXEC_SET_WATCHDOG|EXEC_SETENV_MONITOR_RESULT,
+                          EXEC_PASS_FDS|EXEC_APPLY_SANDBOXING|EXEC_APPLY_CHROOT|EXEC_APPLY_TTY_STDIN|EXEC_SET_WATCHDOG|EXEC_SETENV_MONITOR_RESULT|EXEC_WRITE_CREDENTIALS,
                           &pid);
         if (r < 0)
                 goto fail;
@@ -2635,25 +2635,24 @@ _pure_ static bool service_can_reload(Unit *u) {
         return !!s->exec_command[SERVICE_EXEC_RELOAD];
 }
 
-static unsigned service_exec_command_index(Unit *u, ServiceExecCommand id, ExecCommand *current) {
+static unsigned service_exec_command_index(Unit *u, ServiceExecCommand id, const ExecCommand *current) {
         Service *s = SERVICE(u);
         unsigned idx = 0;
-        ExecCommand *first, *c;
 
         assert(s);
         assert(id >= 0);
         assert(id < _SERVICE_EXEC_COMMAND_MAX);
 
-        first = s->exec_command[id];
+        const ExecCommand *first = s->exec_command[id];
 
         /* Figure out where we are in the list by walking back to the beginning */
-        for (c = current; c != first; c = c->command_prev)
+        for (const ExecCommand *c = current; c != first; c = c->command_prev)
                 idx++;
 
         return idx;
 }
 
-static int service_serialize_exec_command(Unit *u, FILE *f, ExecCommand *command) {
+static int service_serialize_exec_command(Unit *u, FILE *f, const ExecCommand *command) {
         _cleanup_free_ char *args = NULL, *p = NULL;
         Service *s = SERVICE(u);
         const char *type, *key;
@@ -2708,7 +2707,16 @@ static int service_serialize_exec_command(Unit *u, FILE *f, ExecCommand *command
                 return log_oom();
 
         key = strjoina(type, "-command");
-        (void) serialize_item_format(f, key, "%s %u %s %s", service_exec_command_to_string(id), idx, p, args);
+
+        /* We use '+1234' instead of '1234' to mark the last command in a sequence.
+         * This is used in service_deserialize_exec_command(). */
+        (void) serialize_item_format(
+                        f, key,
+                        "%s %s%u %s %s",
+                        service_exec_command_to_string(id),
+                        command->command_next ? "" : "+",
+                        idx,
+                        p, args);
 
         return 0;
 }
@@ -2819,7 +2827,7 @@ int service_deserialize_exec_command(
         Service *s = SERVICE(u);
         int r;
         unsigned idx = 0, i;
-        bool control, found = false;
+        bool control, found = false, last = false;
         ServiceExecCommand id = _SERVICE_EXEC_COMMAND_INVALID;
         ExecCommand *command = NULL;
         _cleanup_free_ char *path = NULL;
@@ -2860,9 +2868,15 @@ int service_deserialize_exec_command(
                         state = STATE_EXEC_COMMAND_INDEX;
                         break;
                 case STATE_EXEC_COMMAND_INDEX:
+                        /* PID 1234 is serialized as either '1234' or '+1234'. The second form is used to
+                         * mark the last command in a sequence. We warn if the deserialized command doesn't
+                         * match what we have loaded from the unit, but we don't need to warn if that is the
+                         * last command. */
+
                         r = safe_atou(arg, &idx);
                         if (r < 0)
                                 return r;
+                        last = arg[0] == '+';
 
                         state = STATE_EXEC_COMMAND_PATH;
                         break;
@@ -2907,6 +2921,8 @@ int service_deserialize_exec_command(
                 s->control_command_id = id;
         } else if (command)
                 s->main_command = command;
+        else if (last)
+                log_unit_debug(u, "Current command vanished from the unit file.");
         else
                 log_unit_warning(u, "Current command vanished from the unit file, execution of the command list won't be resumed.");
 
@@ -2994,6 +3010,11 @@ static int service_deserialize_item(Unit *u, const char *key, const char *value,
 
         } else if (streq(key, "accept-socket")) {
                 Unit *socket;
+
+                if (u->type != UNIT_SOCKET) {
+                        log_unit_debug(u, "Failed to deserialize accept-socket: unit is not a socket");
+                        return 0;
+                }
 
                 r = manager_load_unit(u->manager, value, NULL, NULL, &socket);
                 if (r < 0)
@@ -3357,8 +3378,10 @@ static void service_notify_cgroup_empty_event(Unit *u) {
                         break;
                 }
 
-                if (s->exit_type == SERVICE_EXIT_CGROUP && main_pid_good(s) <= 0)
-                        service_enter_start_post(s);
+                if (s->exit_type == SERVICE_EXIT_CGROUP && main_pid_good(s) <= 0) {
+                        service_enter_stop_post(s, SERVICE_SUCCESS);
+                        break;
+                }
 
                 _fallthrough_;
         case SERVICE_START_POST:
@@ -3627,7 +3650,14 @@ static void service_sigchld_event(Unit *u, pid_t pid, int code, int status) {
                                 default:
                                         assert_not_reached();
                                 }
-                        }
+                        } else if (s->exit_type == SERVICE_EXIT_CGROUP && s->state == SERVICE_START &&
+                                   !IN_SET(s->type, SERVICE_NOTIFY, SERVICE_DBUS))
+                                /* If a main process exits very quickly, this function might be executed
+                                 * before service_dispatch_exec_io(). Since this function disabled IO events
+                                 * to monitor the main process above, we need to update the state here too.
+                                 * Let's consider the process is successfully launched and exited, but
+                                 * only when we're not expecting a readiness notification or dbus name. */
+                                service_enter_start_post(s);
                 }
 
         } else if (s->control_pid == pid) {

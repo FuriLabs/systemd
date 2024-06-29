@@ -3,6 +3,7 @@
 #include <net/if_arp.h>
 #include <netinet/tcp.h>
 
+#include "capability-util.h"
 #include "errno-util.h"
 #include "fd-util.h"
 #include "missing_network.h"
@@ -774,7 +775,7 @@ static void dns_stub_query_complete(DnsQuery *query) {
 
                         cname_result = dns_query_process_cname_one(q);
                         if (cname_result == -ELOOP) { /* CNAME loop, let's send what we already have */
-                                log_debug_errno(r, "Detected CNAME loop, returning what we already have.");
+                                log_debug("Detected CNAME loop, returning what we already have.");
                                 (void) dns_stub_send_reply(q, q->answer_rcode);
                                 break;
                         }
@@ -836,12 +837,20 @@ static void dns_stub_query_complete(DnsQuery *query) {
                 break;
 
         case DNS_TRANSACTION_NO_SERVERS:
+                /* We're not configured to give answers for this question. Refuse it. */
+                (void) dns_stub_send_reply(q, DNS_RCODE_REFUSED);
+                break;
+
+        case DNS_TRANSACTION_RR_TYPE_UNSUPPORTED:
+                /* This RR Type is not implemented */
+                (void) dns_stub_send_reply(q, DNS_RCODE_NOTIMP);
+                break;
+
         case DNS_TRANSACTION_INVALID_REPLY:
         case DNS_TRANSACTION_ERRNO:
         case DNS_TRANSACTION_ABORTED:
         case DNS_TRANSACTION_DNSSEC_FAILED:
         case DNS_TRANSACTION_NO_TRUST_ANCHOR:
-        case DNS_TRANSACTION_RR_TYPE_UNSUPPORTED:
         case DNS_TRANSACTION_NETWORK_DOWN:
         case DNS_TRANSACTION_NO_SOURCE:
         case DNS_TRANSACTION_STUB_LOOP:
@@ -1204,7 +1213,7 @@ static int manager_dns_stub_fd(
                 return -errno;
 
         if (type == SOCK_STREAM &&
-            listen(fd, SOMAXCONN) < 0)
+            listen(fd, SOMAXCONN_DELUXE) < 0)
                 return -errno;
 
         r = sd_event_add_io(m->event, event_source, fd, EPOLLIN,
@@ -1236,6 +1245,12 @@ static int manager_dns_stub_fd_extra(Manager *m, DnsStubListenerExtra *l, int ty
         sd_event_source **event_source = type == SOCK_DGRAM ? &l->udp_event_source : &l->tcp_event_source;
         if (*event_source)
                 return sd_event_source_get_io_fd(*event_source);
+
+        if (!have_effective_cap(CAP_NET_BIND_SERVICE) && dns_stub_listener_extra_port(l) < 1024) {
+                log_warning("Missing CAP_NET_BIND_SERVICE capability, not creating extra stub listener on port %hu.",
+                            dns_stub_listener_extra_port(l));
+                return 0;
+        }
 
         if (l->family == AF_INET)
                 sa = (union sockaddr_union) {
@@ -1288,7 +1303,7 @@ static int manager_dns_stub_fd_extra(Manager *m, DnsStubListenerExtra *l, int ty
                 goto fail;
 
         if (type == SOCK_STREAM &&
-            listen(fd, SOMAXCONN) < 0) {
+            listen(fd, SOMAXCONN_DELUXE) < 0) {
                 r = -errno;
                 goto fail;
         }
@@ -1332,6 +1347,8 @@ int manager_dns_stub_start(Manager *m) {
 
         if (m->dns_stub_listener_mode == DNS_STUB_LISTENER_NO)
                 log_debug("Not creating stub listener.");
+        else if (!have_effective_cap(CAP_NET_BIND_SERVICE))
+                log_warning("Missing CAP_NET_BIND_SERVICE capability, not creating stub listener on port 53.");
         else {
                 static const struct {
                         uint32_t addr;

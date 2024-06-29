@@ -372,8 +372,17 @@ static int system_journal_open(Server *s, bool flush_requested, bool relinquish_
 
                 fn = strjoina(s->runtime_storage.path, "/system.journal");
 
-                if (s->system_journal && !relinquish_requested) {
+                if (!s->system_journal || relinquish_requested) {
+                        /* OK, we really need the runtime journal, so create it if necessary. */
 
+                        (void) mkdir_parents(s->runtime_storage.path, 0755);
+                        (void) mkdir(s->runtime_storage.path, 0750);
+
+                        r = open_journal(s, true, fn, O_RDWR|O_CREAT, false, &s->runtime_storage.metrics, &s->runtime_journal);
+                        if (r < 0)
+                                return log_error_errno(r, "Failed to open runtime journal: %m");
+
+                } else if (!flushed_flag_is_set(s)) {
                         /* Try to open the runtime journal, but only
                          * if it already exists, so that we can flush
                          * it into the system journal */
@@ -385,17 +394,6 @@ static int system_journal_open(Server *s, bool flush_requested, bool relinquish_
 
                                 r = 0;
                         }
-
-                } else {
-
-                        /* OK, we really need the runtime journal, so create it if necessary. */
-
-                        (void) mkdir_parents(s->runtime_storage.path, 0755);
-                        (void) mkdir(s->runtime_storage.path, 0750);
-
-                        r = open_journal(s, true, fn, O_RDWR|O_CREAT, false, &s->runtime_storage.metrics, &s->runtime_journal);
-                        if (r < 0)
-                                return log_error_errno(r, "Failed to open runtime journal: %m");
                 }
 
                 if (s->runtime_journal) {
@@ -1018,7 +1016,7 @@ static void dispatch_message_real(
                 IOVEC_ADD_STRING_FIELD(iovec, n, o->slice, "OBJECT_SYSTEMD_SLICE");
                 IOVEC_ADD_STRING_FIELD(iovec, n, o->user_slice, "OBJECT_SYSTEMD_USER_SLICE");
 
-                IOVEC_ADD_ID128_FIELD(iovec, n, o->invocation_id, "OBJECT_SYSTEMD_INVOCATION_ID=");
+                IOVEC_ADD_ID128_FIELD(iovec, n, o->invocation_id, "OBJECT_SYSTEMD_INVOCATION_ID");
         }
 
         assert(n <= m);
@@ -1778,6 +1776,12 @@ int server_schedule_sync(Server *s, int priority) {
                 return 0;
         }
 
+        if (!s->event || sd_event_get_state(s->event) == SD_EVENT_FINISHED) {
+                /* Shutting down the server? Let's sync immediately. */
+                server_sync(s);
+                return 0;
+        }
+
         if (s->sync_scheduled)
                 return 0;
 
@@ -2019,7 +2023,7 @@ static int vl_method_synchronize(Varlink *link, JsonVariant *parameters, Varlink
         if (json_variant_elements(parameters) > 0)
                 return varlink_error_invalid_parameter(link, parameters);
 
-        log_info("Received client request to rotate journal.");
+        log_info("Received client request to sync journal.");
 
         /* We don't do the main work now, but instead enqueue a deferred event loop job which will do
          * it. That job is scheduled at low priority, so that we return from this method call only after all

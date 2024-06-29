@@ -1013,6 +1013,10 @@ static int link_configure(Link *link) {
         if (r < 0)
                 return r;
 
+        r = link_configure_mtu(link);
+        if (r < 0)
+                return r;
+
         if (link->iftype == ARPHRD_CAN) {
                 /* let's shortcut things for CAN which doesn't need most of what's done below. */
                 r = link_request_to_set_can(link);
@@ -1043,10 +1047,6 @@ static int link_configure(Link *link) {
                 return r;
 
         r = link_request_to_set_group(link);
-        if (r < 0)
-                return r;
-
-        r = link_configure_mtu(link);
         if (r < 0)
                 return r;
 
@@ -1642,7 +1642,7 @@ static int link_carrier_lost(Link *link) {
                 usec = 5 * USEC_PER_SEC;
 
         else
-                /* Otherwise, use the currently set value. */
+                /* Otherwise, use the implied default value. */
                 usec = link->network->ignore_carrier_loss_usec;
 
         if (usec == USEC_INFINITY)
@@ -1780,11 +1780,15 @@ void link_update_operstate(Link *link, bool also_update_master) {
          *                          | off | no-carrier | dormant | degraded-carrier | carrier  | enslaved
          *                 ------------------------------------------------------------------------------
          *                 off      | off | no-carrier | dormant | degraded-carrier | carrier  | enslaved
-         * address_state   degraded | off | no-carrier | dormant | degraded-carrier | degraded | enslaved
-         *                 routable | off | no-carrier | dormant | degraded-carrier | routable | routable
+         * address_state   degraded | off | no-carrier | dormant | degraded         | degraded | enslaved
+         *                 routable | off | no-carrier | dormant | routable         | routable | routable
          */
 
-        if (carrier_state < LINK_CARRIER_STATE_CARRIER || address_state == LINK_ADDRESS_STATE_OFF)
+        if (carrier_state == LINK_CARRIER_STATE_DEGRADED_CARRIER && address_state == LINK_ADDRESS_STATE_ROUTABLE)
+                operstate = LINK_OPERSTATE_ROUTABLE;
+        else if (carrier_state == LINK_CARRIER_STATE_DEGRADED_CARRIER && address_state == LINK_ADDRESS_STATE_DEGRADED)
+                operstate = LINK_OPERSTATE_DEGRADED;
+        else if (carrier_state < LINK_CARRIER_STATE_CARRIER || address_state == LINK_ADDRESS_STATE_OFF)
                 operstate = (LinkOperationalState) carrier_state;
         else if (address_state == LINK_ADDRESS_STATE_ROUTABLE)
                 operstate = LINK_OPERSTATE_ROUTABLE;
@@ -2001,20 +2005,18 @@ static int link_update_master(Link *link, sd_netlink_message *message) {
         if (master_ifindex == link->ifindex)
                 master_ifindex = 0;
 
-        if (master_ifindex == link->master_ifindex)
-                return 0;
+        if (master_ifindex != link->master_ifindex) {
+                if (link->master_ifindex == 0)
+                        log_link_debug(link, "Attached to master interface: %i", master_ifindex);
+                else if (master_ifindex == 0)
+                        log_link_debug(link, "Detached from master interface: %i", link->master_ifindex);
+                else
+                        log_link_debug(link, "Master interface changed: %i %s %i", link->master_ifindex,
+                                       special_glyph(SPECIAL_GLYPH_ARROW_RIGHT), master_ifindex);
 
-        if (link->master_ifindex == 0)
-                log_link_debug(link, "Attached to master interface: %i", master_ifindex);
-        else if (master_ifindex == 0)
-                log_link_debug(link, "Detached from master interface: %i", link->master_ifindex);
-        else
-                log_link_debug(link, "Master interface changed: %i %s %i", link->master_ifindex,
-                               special_glyph(SPECIAL_GLYPH_ARROW_RIGHT), master_ifindex);
-
-        link_drop_from_master(link);
-
-        link->master_ifindex = master_ifindex;
+                link_drop_from_master(link);
+                link->master_ifindex = master_ifindex;
+        }
 
         r = link_append_to_master(link);
         if (r < 0)
@@ -2144,7 +2146,7 @@ static int link_update_hardware_address(Link *link, sd_netlink_message *message)
                         log_link_debug_errno(link, r, "Failed to manage link by its new hardware address, ignoring: %m");
         }
 
-        r = ipv4ll_update_mac(link);
+        r = ipv4acd_update_mac(link);
         if (r < 0)
                 return log_link_debug_errno(link, r, "Could not update MAC address in IPv4 ACD client: %m");
 
