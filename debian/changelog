@@ -1,3 +1,9 @@
+systemd (254.15-1~bpo12+1) bookworm-backports; urgency=medium
+
+  * New upstream stable version 254.15
+
+ -- Luca Boccassi <bluca@debian.org>  Mon, 08 Jul 2024 10:19:49 +0100
+
 systemd (254.14-1~bpo12+1) bookworm-backports; urgency=medium
 
   * d/watch: restrict to v254 series
