@@ -1,3 +1,13 @@
+systemd (247.3-7+deb11u6) bullseye-security; urgency=medium
+
+  * Non-maintainer upload by the LTS Team.
+  * CVE-2023-7008: Don't accept records of DNSSEC-signed domains
+    when they have no signature.
+  * CVE-2023-50387: DNSSEC denial of service (CPU consumption)
+  * CVE-2023-50868: DNSSEC denial of service (CPU consumption)
+
+ -- Adrian Bunk <bunk@debian.org>  Sun, 25 Aug 2024 22:05:15 +0300
+
 systemd (247.3-7+deb11u5) bullseye; urgency=medium
 
   * Backport patches to fix build reproducibility
