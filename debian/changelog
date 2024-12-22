@@ -1,3 +1,12 @@
+systemd (254.22-1~bpo12+1) bookworm-backports; urgency=medium
+
+  * New upstream version 254.22
+  * Refresh patches to remove fuzz
+  * Rename kernel-install initrd script (Closes: #1090716)
+  * Bump version in tzdata dependency due to p-u upload
+
+ -- Luca Boccassi <bluca@debian.org>  Sun, 22 Dec 2024 15:37:33 +0000
+
 systemd (254.16-1~bpo12+1) bookworm-backports; urgency=medium
 
   * New upstream stable version 254.16
