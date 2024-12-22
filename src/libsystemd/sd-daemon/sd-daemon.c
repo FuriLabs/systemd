@@ -593,6 +593,19 @@ static int pid_notify_with_fds_internal(
                 }
         } while (!IOVEC_INCREMENT(msghdr.msg_iov, msghdr.msg_iovlen, n));
 
+        if (address.sockaddr.sa.sa_family == AF_VSOCK && IN_SET(type, SOCK_STREAM, SOCK_SEQPACKET)) {
+                /* For AF_VSOCK, we need to close the socket to signal the end of the message. */
+                if (shutdown(fd, SHUT_WR) < 0)
+                        return log_debug_errno(errno, "Failed to shutdown notify socket: %m");
+
+                char c;
+                n = recv(fd, &c, sizeof(c), MSG_NOSIGNAL);
+                if (n < 0)
+                        return log_debug_errno(errno, "Failed to wait for EOF on notify socket: %m");
+                if (n > 0)
+                        return log_debug_errno(SYNTHETIC_ERRNO(EPROTO), "Unexpectedly received data on notify socket.");
+        }
+
         return 1;
 }
 
@@ -714,17 +727,18 @@ _public_ int sd_pid_notifyf_with_fds(
 }
 
 _public_ int sd_booted(void) {
-        /* We test whether the runtime unit file directory has been
-         * created. This takes place in mount-setup.c, so is
-         * guaranteed to happen very early during boot. */
+        int r;
 
-        if (laccess("/run/systemd/system/", F_OK) >= 0)
+        /* We test whether the runtime unit file directory has been created. This takes place in mount-setup.c,
+         * so is guaranteed to happen very early during boot. */
+
+        r = laccess("/run/systemd/system/", F_OK);
+        if (r >= 0)
                 return true;
-
-        if (errno == ENOENT)
+        if (r == -ENOENT)
                 return false;
 
-        return -errno;
+        return r;
 }
 
 _public_ int sd_watchdog_enabled(int unset_environment, uint64_t *usec) {
