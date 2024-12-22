@@ -397,6 +397,7 @@ possible_common_cc_flags = [
         '-Wstrict-aliasing=2',
         '-Wstrict-prototypes',
         '-Wsuggest-attribute=noreturn',
+        '-Wunterminated-string-initialization',
         '-Wunused-function',
         '-Wwrite-strings',
         '-Wzero-length-bounds',
@@ -409,7 +410,7 @@ possible_common_cc_flags = [
         '-fno-common',
         '-fstack-protector',
         '-fstack-protector-strong',
-        '-fstrict-flex-arrays',
+        '-fstrict-flex-arrays=3',
         '--param=ssp-buffer-size=4',
 ]
 
@@ -549,10 +550,10 @@ conf.set_quoted('LONG_MAX_STR', '@0@'.format(long_max))
 
 decl_headers = '''
 #include <dirent.h>
-#include <uchar.h>
+#include <sched.h>
 #include <sys/mount.h>
 #include <sys/stat.h>
-#include <sched.h>
+#include <uchar.h>
 '''
 
 foreach decl : ['char16_t',
@@ -2058,15 +2059,16 @@ if conf.get('BPF_FRAMEWORK') == 1
         # C.f. https://mesonbuild.com/Reference-tables.html#cpu-families
         # and src/basic/missing_syscall_def.h.
         cpu_arch_defines = {
-                'ppc'     : ['-D__powerpc__', '-D__TARGET_ARCH_powerpc'],
-                'ppc64'   : ['-D__powerpc64__', '-D__TARGET_ARCH_powerpc', '-D_CALL_ELF=2'],
-                'riscv32' : ['-D__riscv', '-D__riscv_xlen=32', '-D__TARGET_ARCH_riscv'],
-                'riscv64' : ['-D__riscv', '-D__riscv_xlen=64', '-D__TARGET_ARCH_riscv'],
-                'x86'     : ['-D__i386__', '-D__TARGET_ARCH_x86'],
-                's390x'   : ['-D__s390__', '-D__s390x__', '-D__TARGET_ARCH_s390'],
+                'ppc'         : ['-D__powerpc__', '-D__TARGET_ARCH_powerpc'],
+                'ppc64'       : ['-D__powerpc64__', '-D__TARGET_ARCH_powerpc', '-D_CALL_ELF=2'],
+                'riscv32'     : ['-D__riscv', '-D__riscv_xlen=32', '-D__TARGET_ARCH_riscv'],
+                'riscv64'     : ['-D__riscv', '-D__riscv_xlen=64', '-D__TARGET_ARCH_riscv'],
+                'x86'         : ['-D__i386__', '-D__TARGET_ARCH_x86'],
+                's390x'       : ['-D__s390__', '-D__s390x__', '-D__TARGET_ARCH_s390'],
 
                 # For arm, assume hardware fp is available.
-                'arm'     : ['-D__arm__', '-D__ARM_PCS_VFP', '-D__TARGET_ARCH_arm'],
+                'arm'         : ['-D__arm__', '-D__ARM_PCS_VFP', '-D__TARGET_ARCH_arm'],
+                'loongarch64' : ['-D__loongarch__', '-D__loongarch_grlen=64', '-D__TARGET_ARCH_loongarch']
         }
 
         bpf_arch_flags = cpu_arch_defines.get(host_machine.cpu_family(),
@@ -2094,15 +2096,22 @@ if conf.get('BPF_FRAMEWORK') == 1
 
         bpf_o_unstripped_cmd += ['-I.']
 
-        if not meson.is_cross_build()
-                target_triplet_cmd = run_command('gcc', '-dumpmachine', check: false)
-                if target_triplet_cmd.returncode() == 0
-                        target_triplet = target_triplet_cmd.stdout().strip()
-                        bpf_o_unstripped_cmd += [
-                                '-isystem',
-                                '/usr/include/@0@'.format(target_triplet)
-                        ]
+        if cc.get_id() == 'gcc' or meson.is_cross_build()
+                if cc.get_id() != 'gcc'
+                        warning('Cross compiler is not gcc. Guessing the target triplet for bpf likely fails.')
                 endif
+                target_triplet_cmd = run_command(cc.cmd_array(), '-print-multiarch', check: false)
+        else
+                # clang does not support -print-multiarch (D133170) and its -dump-machine
+                # does not match multiarch. Query gcc instead.
+                target_triplet_cmd = run_command('gcc', '-print-multiarch', check: false)
+        endif
+        if target_triplet_cmd.returncode() == 0
+                target_triplet = target_triplet_cmd.stdout().strip()
+                bpf_o_unstripped_cmd += [
+                        '-isystem',
+                        '/usr/include/@0@'.format(target_triplet)
+                ]
         endif
 
         bpf_o_unstripped_cmd += [

@@ -1485,7 +1485,7 @@ static void config_entry_add_type1(
 
                 if (streq8(key, "architecture")) {
                         /* do not add an entry for an EFI image of architecture not matching with that of the image */
-                        if (!streq8(value, EFI_MACHINE_TYPE_NAME)) {
+                        if (!strcaseeq8(value, EFI_MACHINE_TYPE_NAME)) {
                                 entry->type = LOADER_UNDEFINED;
                                 break;
                         }
@@ -2413,7 +2413,7 @@ static EFI_STATUS image_start(
         if (err == EFI_UNSUPPORTED && entry->type == LOADER_LINUX) {
                 uint32_t compat_address;
 
-                err = pe_kernel_info(loaded_image->ImageBase, &compat_address);
+                err = pe_kernel_info(loaded_image->ImageBase, &compat_address, /* ret_size_in_memory= */ NULL);
                 if (err != EFI_SUCCESS) {
                         if (err != EFI_UNSUPPORTED)
                                 return log_error_status(err, "Error finding kernel compat entry address: %m");

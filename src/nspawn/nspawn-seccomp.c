@@ -56,6 +56,7 @@ static int add_syscall_filters(
                 { CAP_IPC_LOCK,       "@memlock"                     },
 
                 /* Plus a good set of additional syscalls which are not part of any of the groups above */
+                { 0,                  "arm_fadvise64_64"             },
                 { 0,                  "brk"                          },
                 { 0,                  "capget"                       },
                 { 0,                  "capset"                       },
@@ -90,7 +91,6 @@ static int add_syscall_filters(
                 { 0,                  "sched_rr_get_interval"        },
                 { 0,                  "sched_rr_get_interval_time64" },
                 { 0,                  "sched_yield"                  },
-                { 0,                  "seccomp"                      },
                 { 0,                  "sendfile"                     },
                 { 0,                  "sendfile64"                   },
                 { 0,                  "setdomainname"                },

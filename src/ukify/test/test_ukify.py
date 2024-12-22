@@ -36,6 +36,13 @@ except ImportError as e:
 sys.path.append(os.path.dirname(__file__) + '/..')
 import ukify
 
+# Skip if we're running on an architecture that does not use UEFI.
+try:
+    ukify.guess_efi_arch()
+except ValueError as e:
+    print(str(e), file=sys.stderr)
+    sys.exit(77)
+
 build_root = os.getenv('PROJECT_BUILD_ROOT')
 try:
     slow_tests = bool(int(os.getenv('SYSTEMD_SLOW_TESTS', '1')))
@@ -608,7 +615,7 @@ def test_efi_signing_pesign(kernel_initrd, tmp_path):
 
     ukify.make_uki(opts)
 
-    # let's check that sbverify likes the resulting file
+    # let's check that pesign likes the resulting file
     dump = subprocess.check_output([
         'pesign', '-S',
         '-i', output,
@@ -622,7 +629,9 @@ def test_efi_signing_pesign(kernel_initrd, tmp_path):
 def test_pcr_signing(kernel_initrd, tmp_path):
     if kernel_initrd is None:
         pytest.skip('linux+initrd not found')
-    if systemd_measure() is None:
+    try:
+        systemd_measure()
+    except ValueError:
         pytest.skip('systemd-measure not found')
 
     ourdir = pathlib.Path(__file__).parent
@@ -688,7 +697,9 @@ def test_pcr_signing(kernel_initrd, tmp_path):
 def test_pcr_signing2(kernel_initrd, tmp_path):
     if kernel_initrd is None:
         pytest.skip('linux+initrd not found')
-    if systemd_measure() is None:
+    try:
+        systemd_measure()
+    except ValueError:
         pytest.skip('systemd-measure not found')
 
     ourdir = pathlib.Path(__file__).parent

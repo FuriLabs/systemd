@@ -254,6 +254,13 @@ static void test_capability_get_ambient(void) {
 
         assert_se(capability_get_ambient(&c) >= 0);
 
+        r = prctl(PR_CAPBSET_READ, CAP_MKNOD);
+        if (r <= 0)
+                return (void) log_tests_skipped("Lacking CAP_MKNOD, skipping getambient test.");
+        r = prctl(PR_CAPBSET_READ, CAP_LINUX_IMMUTABLE);
+        if (r <= 0)
+                return (void) log_tests_skipped("Lacking CAP_LINUX_IMMUTABLE, skipping getambient test.");
+
         r = safe_fork("(getambient)", FORK_RESET_SIGNALS|FORK_DEATHSIG|FORK_WAIT|FORK_LOG, NULL);
         assert_se(r >= 0);
 
@@ -318,10 +325,13 @@ int main(int argc, char *argv[]) {
 
         show_capabilities();
 
-        test_drop_privileges();
+        if (!userns_has_single_user())
+                test_drop_privileges();
+
         test_update_inherited_set();
 
-        fork_test(test_have_effective_cap);
+        if (!userns_has_single_user())
+                fork_test(test_have_effective_cap);
 
         if (run_ambient)
                 fork_test(test_apply_ambient_caps);
