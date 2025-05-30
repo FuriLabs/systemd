@@ -1,3 +1,11 @@
+systemd (254.26-1~bpo12+1) bookworm-backports; urgency=medium
+
+  * New upstream version 254.26 (fixes CVE-2025-4598)
+  * Refresh patch to remove fuzz from 252.37
+  * Fix tzdata test dependencies
+
+ -- Luca Boccassi <bluca@debian.org>  Fri, 30 May 2025 15:35:30 +0100
+
 systemd (254.22-1~bpo12+1) bookworm-backports; urgency=medium
 
   * New upstream version 254.22
