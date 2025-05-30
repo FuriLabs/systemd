@@ -362,9 +362,12 @@
     <para><function>sd_pid_notify()</function> and <function>sd_pid_notifyf()</function> are similar to
     <function>sd_notify()</function> and <function>sd_notifyf()</function> but take a process ID (PID) to use
     as originating PID for the message as first argument. This is useful to send notification messages on
-    behalf of other processes, provided the appropriate privileges are available. If the PID argument is
-    specified as 0, the process ID of the calling process is used, in which case the calls are fully
-    equivalent to <function>sd_notify()</function> and <function>sd_notifyf()</function>.</para>
+    behalf of other processes, provided the appropriate privileges are available. Effectively, this means
+    that a privileged invocation of <command>sd_pid_notify()</command> may circumvent
+    <varname>NotifyAccess=main</varname> or <varname>NotifyAccess=exec</varname> restrictions enforced for a
+    service. If the PID argument is specified as 0, the process ID of the calling process is used, in which
+    case the calls are fully equivalent to <function>sd_notify()</function> and
+    <function>sd_notifyf()</function>.</para>
 
     <para><function>sd_pid_notify_with_fds()</function> is similar to <function>sd_pid_notify()</function>
     but takes an additional array of file descriptors. These file descriptors are sent along the notification
@@ -402,6 +405,26 @@
     successfully. Specifically, no error is returned when a file descriptor is attempted to be stored using
     <varname>FDSTORE=1</varname> but the service is not actually configured to permit storing of file
     descriptors (see above).</para>
+
+    <refsect2 id='errors'>
+      <title>Errors</title>
+
+      <para>Returned errors may indicate the following problems:</para>
+
+      <variablelist>
+        <varlistentry>
+          <term><constant>-E2BIG</constant></term>
+
+          <listitem><para>More file descriptors passed at once than the system allows. On Linux the number of
+          file descriptors that may be passed across <constant>AF_UNIX</constant> sockets at once is 253, see
+          <citerefentry
+          project='man-pages'><refentrytitle>unix</refentrytitle><manvolnum>7</manvolnum></citerefentry> for
+          details.</para>
+
+          </listitem>
+        </varlistentry>
+      </variablelist>
+    </refsect2>
   </refsect1>
 
   <refsect1>
