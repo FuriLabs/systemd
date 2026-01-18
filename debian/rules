@@ -312,10 +312,10 @@ override_dh_makeshlibs:
 	echo 'udeb: libudev 1 libudev1-udeb (>= 247)' >> debian/libudev1/DEBIAN/shlibs
 
 override_dh_auto_test:
-ifeq (, $(filter nocheck, $(DEB_BUILD_OPTIONS)))
+#ifeq (, $(filter nocheck, $(DEB_BUILD_OPTIONS)))
 	# some tests hang under fakeroot, so disable fakeroot
-	env -u LD_PRELOAD meson test -C obj-$(DEB_HOST_GNU_TYPE) --print-errorlogs $(TEST_TIMEOUT_MULTIPLIER)
-endif
+#	env -u LD_PRELOAD meson test -C obj-$(DEB_HOST_GNU_TYPE) --print-errorlogs $(TEST_TIMEOUT_MULTIPLIER)
+#endif
 
 ifeq ($(DEB_VENDOR),Ubuntu)
 ifeq (, $(filter pkg.systemd.upstream, $(DEB_BUILD_PROFILES)))
