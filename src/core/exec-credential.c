@@ -21,6 +21,7 @@
 #include "mountpoint-util.h"
 #include "ordered-set.h"
 #include "path-lookup.h"
+#include "process-util.h"
 #include "path-util.h"
 #include "random-util.h"
 #include "recurse-dir.h"
