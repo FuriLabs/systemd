@@ -46,6 +46,7 @@ usr/bin/systemd-mute-console
 usr/bin/systemd-notify
 usr/bin/systemd-path
 usr/bin/systemd-pty-forward
+<pkg.systemd.upstream> usr/bin/systemd-report
 usr/bin/systemd-run
 usr/bin/systemd-socket-activate
 usr/bin/systemd-stdio-bridge
