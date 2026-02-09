@@ -472,6 +472,7 @@ usr/lib/tmpfiles.d/systemd-network.conf
 usr/lib/tmpfiles.d/systemd-nologin.conf
 usr/lib/tmpfiles.d/systemd-pstore.conf
 usr/lib/tmpfiles.d/systemd-tmp.conf
+<pkg.systemd.upstream> usr/lib/tmpfiles.d/20-systemd-varlink.conf
 usr/lib/tmpfiles.d/tmp.conf
 usr/lib/tmpfiles.d/var.conf
 usr/lib/tmpfiles.d/x11.conf
@@ -535,6 +536,7 @@ usr/share/polkit-1/rules.d/empower.rules
 usr/share/polkit-1/rules.d/systemd-networkd.rules
 usr/share/systemd/kbd-model-map
 usr/share/systemd/language-fallback-map
+<pkg.systemd.upstream> usr/share/user-tmpfiles.d/20-systemd-varlink.conf
 usr/share/zsh/vendor-completions/_busctl
 usr/share/zsh/vendor-completions/_hostnamectl
 usr/share/zsh/vendor-completions/_journalctl
