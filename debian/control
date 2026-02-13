@@ -90,6 +90,7 @@ Architecture: linux-any
 Multi-Arch: foreign
 Priority: important
 Recommends: default-dbus-system-bus | dbus-system-bus,
+# TODO: make linux-sysctl-defaults a dependency once noble is not supported anymore
             linux-sysctl-defaults,
             login,
             systemd-timesyncd | time-daemon,
