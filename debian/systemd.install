@@ -46,7 +46,6 @@ usr/bin/systemd-mute-console
 usr/bin/systemd-notify
 usr/bin/systemd-path
 usr/bin/systemd-pty-forward
-<pkg.systemd.upstream> usr/bin/systemd-report
 usr/bin/systemd-run
 usr/bin/systemd-socket-activate
 usr/bin/systemd-stdio-bridge
@@ -134,6 +133,7 @@ usr/lib/systemd/systemd-quotacheck
 usr/lib/systemd/systemd-random-seed
 usr/lib/systemd/systemd-remount-fs
 usr/lib/systemd/systemd-reply-password
+<pkg.systemd.upstream> usr/lib/systemd/systemd-report
 usr/lib/systemd/systemd-rfkill
 usr/lib/systemd/systemd-shutdown
 usr/lib/systemd/systemd-sleep
