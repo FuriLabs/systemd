@@ -1,12 +1,14 @@
 #!/usr/bin/dh-exec
 usr/bin/importctl
 <pkg.systemd.upstream> usr/bin/updatectl
+<pkg.systemd.upstream> usr/bin/systemd-mstack
 usr/bin/systemd-vmspawn
 usr/lib/systemd/system/systemd-vmspawn@.service
 usr/bin/machinectl
 usr/bin/portablectl
 usr/lib/systemd/import-pubring.*
 usr/lib/systemd/network/80-namespace-ns*
+<pkg.systemd.upstream> usr/lib/systemd/oci-registry/
 usr/lib/systemd/portable
 usr/lib/systemd/systemd-machined
 usr/lib/systemd/systemd-export
@@ -55,6 +57,7 @@ usr/bin/systemd-nspawn
 usr/lib/tmpfiles.d/portables.conf
 usr/lib/tmpfiles.d/systemd-nspawn.conf
 usr/sbin/mount.ddi
+<pkg.systemd.upstream> usr/sbin/mount.mstack
 usr/share/dbus-1/services/org.freedesktop.import1.service
 usr/share/dbus-1/services/org.freedesktop.machine1.service
 <pkg.systemd.upstream> usr/share/dbus-1/services/org.freedesktop.portable1.service
