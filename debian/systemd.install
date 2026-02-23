@@ -248,6 +248,7 @@ usr/lib/systemd/system/sockets.target.wants/systemd-ask-password.socket
 usr/lib/systemd/system/sockets.target.wants/systemd-creds.socket
 usr/lib/systemd/system/sockets.target.wants/systemd-factory-reset.socket
 usr/lib/systemd/system/sockets.target.wants/systemd-hostnamed.socket
+<pkg.systemd.upstream> usr/lib/systemd/system/sockets.target.wants/systemd-journalctl.socket
 usr/lib/systemd/system/sockets.target.wants/systemd-journald-dev-log.socket
 usr/lib/systemd/system/sockets.target.wants/systemd-journald.socket
 usr/lib/systemd/system/sockets.target.wants/systemd-logind-varlink.socket
@@ -448,6 +449,7 @@ usr/lib/systemd/user/shutdown.target
 usr/lib/systemd/user/smartcard.target
 usr/lib/systemd/user/sockets.target
 usr/lib/systemd/user/sockets.target.wants/systemd-ask-password.socket
+<pkg.systemd.upstream> usr/lib/systemd/user/sockets.target.wants/systemd-journalctl.socket
 usr/lib/systemd/user/sound.target
 usr/lib/systemd/user/systemd-ask-password.socket
 usr/lib/systemd/user/systemd-ask-password@.service
