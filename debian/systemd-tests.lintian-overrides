@@ -11,6 +11,5 @@ systemd-tests: repeated-path-segment * [*]
 # Test files
 systemd-tests: systemd-service-file-missing-documentation-key [*]
 systemd-tests: systemd-service-file-refers-to-unusual-wantedby-target * [*]
-systemd-tests: wrong-path-for-interpreter /usr/bin/bash != /bin/bash [*]
 # Intentional for integration tests
 systemd-tests: symlink-is-self-recursive .. [usr/lib/systemd/tests/integration-tests/standalone/integration-tests]
