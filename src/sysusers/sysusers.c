@@ -2139,15 +2139,10 @@ static int parse_argv(int argc, char *argv[]) {
                         break;
 
                 case ARG_IMAGE:
-#ifdef STANDALONE
-                        return log_error_errno(SYNTHETIC_ERRNO(EOPNOTSUPP),
-                                               "This systemd-sysusers version is compiled without support for --image=.");
-#else
                         r = parse_path_argument(optarg, /* suppress_root= */ false, &arg_image);
                         if (r < 0)
                                 return r;
                         break;
-#endif
 
                 case ARG_IMAGE_POLICY:
                         r = parse_image_policy_argument(optarg, &arg_image_policy);
@@ -2271,10 +2266,8 @@ static int read_credential_lines(Context *c) {
 }
 
 static int run(int argc, char *argv[]) {
-#ifndef STANDALONE
         _cleanup_(loop_device_unrefp) LoopDevice *loop_device = NULL;
         _cleanup_(umount_and_freep) char *mounted_dir = NULL;
-#endif
         _cleanup_close_ int lock = -EBADF;
         _cleanup_(context_done) Context c = {
                 .audit_fd = -EBADF,
@@ -2302,7 +2295,6 @@ static int run(int argc, char *argv[]) {
         if (r < 0)
                 return r;
 
-#ifndef STANDALONE
         if (arg_image) {
                 assert(!arg_root);
 
@@ -2326,9 +2318,6 @@ static int run(int argc, char *argv[]) {
                 if (!arg_root)
                         return log_oom();
         }
-#else
-        assert(!arg_image);
-#endif
 
         /* Prepare to emit audit events, but only if we're operating on the host system. */
         if (!arg_root)

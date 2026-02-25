@@ -113,7 +113,7 @@
 /* How many units and jobs to process of the bus queue before returning to the event loop. */
 #define MANAGER_BUS_MESSAGE_BUDGET 100U
 
-#define DEFAULT_TASKS_MAX ((CGroupTasksMax) { 15U, 100U }) /* 15% */
+#define DEFAULT_TASKS_MAX ((const CGroupTasksMax) { 15U, 100U }) /* 15% */
 
 static int manager_dispatch_notify_fd(sd_event_source *source, int fd, uint32_t revents, void *userdata);
 static int manager_dispatch_signal_fd(sd_event_source *source, int fd, uint32_t revents, void *userdata);
@@ -697,6 +697,7 @@ int manager_default_environment(Manager *m) {
                                     "XDG_SESSION_CLASS",
                                     "XDG_SESSION_TYPE",
                                     "XDG_SESSION_DESKTOP",
+                                    "XDG_SESSION_EXTRA_DEVICE_ACCESS",
                                     "XDG_SEAT",
                                     "XDG_VTNR");
         }
@@ -1887,13 +1888,15 @@ static bool manager_dbus_is_running(Manager *m, bool deserialized) {
         u = manager_get_unit(m, SPECIAL_DBUS_SERVICE);
         if (!u)
                 return false;
-        if (!IN_SET((deserialized ? SERVICE(u)->deserialized_state : SERVICE(u)->state),
+        if (!IN_SET(deserialized ? SERVICE(u)->deserialized_state : SERVICE(u)->state,
                     SERVICE_RUNNING,
-                    SERVICE_MOUNTING,
-                    SERVICE_RELOAD,
-                    SERVICE_RELOAD_NOTIFY,
                     SERVICE_REFRESH_EXTENSIONS,
-                    SERVICE_RELOAD_SIGNAL))
+                    SERVICE_REFRESH_CREDENTIALS,
+                    SERVICE_RELOAD,
+                    SERVICE_RELOAD_SIGNAL,
+                    SERVICE_RELOAD_NOTIFY,
+                    SERVICE_RELOAD_POST,
+                    SERVICE_MOUNTING))
                 return false;
 
         return true;
@@ -4135,7 +4138,7 @@ static int manager_run_generators(Manager *m) {
         if (is_dir("/tmp", /* follow= */ false) > 0 && !MANAGER_IS_TEST_RUN(m))
                 flags |= FORK_PRIVATE_TMP;
 
-        r = safe_fork("(sd-gens)", flags, NULL);
+        r = pidref_safe_fork("(sd-gens)", flags, /* ret= */ NULL);
         if (r == 0) {
                 r = manager_execute_generators(m, paths, /* remount_ro= */ true);
                 _exit(r >= 0 ? EXIT_SUCCESS : EXIT_FAILURE);
@@ -4352,7 +4355,7 @@ static bool manager_journal_is_running(Manager *m) {
         u = manager_get_unit(m, SPECIAL_JOURNALD_SERVICE);
         if (!u)
                 return false;
-        if (!IN_SET(SERVICE(u)->state, SERVICE_RELOAD, SERVICE_RUNNING))
+        if (!UNIT_IS_ACTIVE_OR_RELOADING(unit_active_state(u)) || SERVICE(u)->state == SERVICE_EXITED)
                 return false;
 
         return true;
