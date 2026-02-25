@@ -1,3 +1,24 @@
+systemd (260~rc1-1) unstable; urgency=medium
+
+  [ Nick Rosbrook ]
+  * d/libsystemd-shared.preinst: refuse to upgrade without unified
+    cgroupv2 hierarchy
+
+  [ Luca Boccassi ]
+  * homed: drop dependency satisfied since bookworm/noble
+  * systemd.postinst: update journal catalog after reexecing managers
+  * initramfs-tools: copy udev link files from
+    /usr/local/lib/systemd/network too (Closes: #1128930)
+  * Update upstream source from tag 'upstream/260_rc1' Update to upstream
+    version '260~rc1' with Debian dir
+    6b709802e9ad49539cd2d746ca50f6ecfec3dde7
+  * Install new files for v260~rc1
+  * Disable remaining deprecated sysv interfaces
+  * Update symbols file for v260~rc1
+  * Drop unused Lintian overrides
+
+ -- Luca Boccassi <bluca@debian.org>  Wed, 25 Feb 2026 19:20:58 +0000
+
 systemd (259.1-1) unstable; urgency=medium
 
   [ Luca Boccassi ]
