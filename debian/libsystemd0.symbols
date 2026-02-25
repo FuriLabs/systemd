@@ -40,6 +40,7 @@ libsystemd.so.0 libsystemd0 #MINVER#
  LIBSYSTEMD_257@LIBSYSTEMD_257 257~rc1
  LIBSYSTEMD_258@LIBSYSTEMD_258 258~rc1
  LIBSYSTEMD_259@LIBSYSTEMD_259 259~rc1
+ LIBSYSTEMD_260@LIBSYSTEMD_260 260~rc1
  sd_booted@LIBSYSTEMD_209 0
  sd_bus_add_fallback@LIBSYSTEMD_221 221
  sd_bus_add_fallback_vtable@LIBSYSTEMD_221 221
@@ -781,6 +782,7 @@ libsystemd.so.0 libsystemd0 #MINVER#
  sd_session_get_class@LIBSYSTEMD_209 0
  sd_session_get_desktop@LIBSYSTEMD_217 217
  sd_session_get_display@LIBSYSTEMD_209 0
+ sd_session_get_extra_device_access@LIBSYSTEMD_260 260~rc1
  sd_session_get_leader@LIBSYSTEMD_254 254
  sd_session_get_remote_host@LIBSYSTEMD_209 0
  sd_session_get_remote_user@LIBSYSTEMD_209 0
