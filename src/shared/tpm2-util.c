@@ -4354,7 +4354,7 @@ int tpm2_tpm2b_public_to_openssl_pkey(const TPM2B_PUBLIC *public, EVP_PKEY **ret
  * "name", because it would break unsealing of previously-sealed objects that used (for example)
  * tpm2_calculate_policy_authorize(). See bug #30546. */
 int tpm2_tpm2b_public_from_openssl_pkey(const EVP_PKEY *pkey, TPM2B_PUBLIC *ret) {
-        int key_id, r;
+        int r;
 
         assert(pkey);
         assert(ret);
@@ -4368,12 +4368,7 @@ int tpm2_tpm2b_public_from_openssl_pkey(const EVP_PKEY *pkey, TPM2B_PUBLIC *ret)
                 },
         };
 
-#if OPENSSL_VERSION_MAJOR >= 3
-        key_id = EVP_PKEY_get_id(pkey);
-#else
-        key_id = EVP_PKEY_id(pkey);
-#endif
-
+        int key_id = EVP_PKEY_get_id(pkey);
         switch (key_id) {
         case EVP_PKEY_EC: {
                 public.type = TPM2_ALG_ECC;
@@ -5446,6 +5441,11 @@ int tpm2_seal(Tpm2Context *c,
                                                seal_key_handle);
 
                 primary_alg = primary_public->publicArea.type;
+
+                /* Propagate fixedTPM/fixedParent flags from sealing key to hmac key */
+                hmac_template.objectAttributes = (hmac_template.objectAttributes & ~(TPMA_OBJECT_FIXEDTPM|TPMA_OBJECT_FIXEDPARENT)) |
+                                                 (primary_public->publicArea.objectAttributes & (TPMA_OBJECT_FIXEDTPM|TPMA_OBJECT_FIXEDPARENT));
+
         } else {
                 if (seal_key_handle != 0)
                         log_debug("Using primary alg sealing, but seal key handle also provided; ignoring seal key handle.");
@@ -6478,6 +6478,7 @@ static const char* tpm2_userspace_event_type_table[_TPM2_USERSPACE_EVENT_TYPE_MA
         [TPM2_EVENT_KEYSLOT]         = "keyslot",
         [TPM2_EVENT_NVPCR_INIT]      = "nvpcr-init",
         [TPM2_EVENT_NVPCR_SEPARATOR] = "nvpcr-separator",
+        [TPM2_EVENT_DM_VERITY]       = "dm-verity",
 };
 
 DEFINE_STRING_TABLE_LOOKUP(tpm2_userspace_event_type, Tpm2UserspaceEventType);

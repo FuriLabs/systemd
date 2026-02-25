@@ -149,6 +149,8 @@ simple_tests += files(
         'test-mkdir.c',
         'test-modhex.c',
         'test-mountpoint-util.c',
+        'test-mstack.c',
+        'test-namespace-util.c',
         'test-net-naming-scheme.c',
         'test-notify-recv.c',
         'test-nsresource.c',
@@ -345,7 +347,7 @@ executables += [
         },
         test_template + {
                 'sources' : files('test-libcrypt-util.c'),
-                'dependencies' : libcrypt,
+                'conditions' : ['HAVE_LIBCRYPT'],
                 'timeout' : 120,
         },
         test_template + {
@@ -401,6 +403,11 @@ executables += [
         },
         test_template + {
                 'sources' : files('test-openssl.c'),
+                'dependencies' : libopenssl,
+                'conditions' : ['HAVE_OPENSSL'],
+        },
+        test_template + {
+                'sources' : files('test-pkcs7-util.c'),
                 'dependencies' : libopenssl,
                 'conditions' : ['HAVE_OPENSSL'],
         },
@@ -529,14 +536,16 @@ executables += [
                 'type' : 'manual',
         },
         core_test_template + {
+                'sources' : files('test-thp.c'),
+                'dependencies' : common_test_dependencies,
+                'type' : 'manual',
+        },
+        core_test_template + {
                 'sources' : files('test-cgroup-cpu.c'),
         },
         core_test_template + {
                 'sources' : files('test-cgroup-mask.c'),
                 'dependencies' : common_test_dependencies,
-        },
-        core_test_template + {
-                'sources' : files('test-cgroup-unit-default.c'),
         },
         core_test_template + {
                 'sources' : files('test-chown-rec.c'),
