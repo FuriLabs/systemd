@@ -289,6 +289,7 @@ override_dh_installsystemd:
 	# do not restart logind
 	# https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=919509
 	dh_installsystemd -psystemd --no-enable --no-start --no-stop-on-upgrade --restart-after-upgrade --no-also systemd-networkd.service systemd-journald.service
+	dh_installsystemd -psystemd --no-start --no-stop-on-upgrade --no-restart-after-upgrade getty@.service
 
 override_dh_installsystemduser:
 
