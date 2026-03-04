@@ -457,7 +457,7 @@ static int lookup_unit_by_parameters(
         }
 
         if (p->cgroup) {
-                if (!path_is_safe(p->cgroup))
+                if (!path_is_absolute(p->cgroup) || !path_is_normalized(p->cgroup))
                         return sd_varlink_error_invalid_parameter_name(link, "cgroup");
 
                 Unit *cgroup_unit = manager_get_unit_by_cgroup(manager, p->cgroup);
@@ -516,7 +516,7 @@ int vl_method_list_units(sd_varlink *link, sd_json_variant *parameters, sd_varli
         if (!FLAGS_SET(flags, SD_VARLINK_METHOD_MORE))
                 return sd_varlink_error(link, SD_VARLINK_ERROR_EXPECTED_MORE, NULL);
 
-        r = varlink_set_sentinel(link, "io.systemd.Manager.NoSuchUnit");
+        r = varlink_set_sentinel(link, VARLINK_ERROR_UNIT_NO_SUCH_UNIT);
         if (r < 0)
                 return r;
 
