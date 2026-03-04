@@ -1,3 +1,17 @@
+systemd (260~rc2-1) unstable; urgency=high
+
+  * Remove build-depend on rsync, meson is new enough
+  * Enable getty@ via packaging scriptlets, not static anymore (Closes:
+    #1129276)
+  * Update upstream source from tag 'upstream/260_rc2' Update to upstream
+    version '260~rc2' with Debian dir
+    9c39b1f4781cb5ab95271453bfa0b453e971da5b
+    Fixes:
+    https://github.com/systemd/systemd/security/advisories/GHSA-6pwp-j5vg-5j6m
+  * Install new files
+
+ -- Luca Boccassi <bluca@debian.org>  Wed, 04 Mar 2026 13:40:07 +0000
+
 systemd (260~rc1-2) unstable; urgency=medium
 
   * sd-boot-efi: do not pick up hwids, they are shipped by sd-ukify.
