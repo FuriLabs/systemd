@@ -121,6 +121,16 @@ Deprecations and removals:
 
 Features:
 
+* start making use of the new --graceful switch to util-linux' umount command
+
+* make systemd work nicely without /bin/sh, logins and associated shell tools around
+  - add a small unit that just prints "boot complete" which we can pull in
+    wherever we pull in getty@1.service, but is conditioned on /bin/sh being
+    gone.
+  - get rid of /bin/rm in ExecStart= of system-update-cleanup.service
+  - make sure debug shell service (sushell) has a nice failure mode, prints a message and reboots
+  - varlink interface for "systemctl start" and friends
+
 * drop NV_ORDERLY flag from the product uuid nvpcr. Effect of the flag is that
   it pushes the thing into TPM RAM, but a TPM usually has very little of that,
   less than NVRAM. hence setting the flag amplifies space issues. Unsetting the
@@ -131,15 +141,18 @@ Features:
   possibly. (also, NV_ORDERLY makes stuff faster, and dropping it costs
   possibly up to 100ms supposedly)
 
-* create a hwdb database that contains tpm quirks, i.e. knows whether NV_ORDERLY
-  + TPM2_NT_EXTEND can be safely mixed or
-  not. (see https://github.com/systemd/systemd/issues/40485#issuecomment-3984855537)
-
 * instead of going directly for DefineSpace when initializing nvpcrs, check if
   they exist first. apparently DEfineSpace is broken on some tpms, and also
   creates log spam if the nvindex already exists.
 
 * on first login of a user, measure its identity to some nvpcr
+
+* optionally spawn an swtpm instance if a system doesn't have a native tpm, do
+  it via the tpm generator
+
+* add a secret key logic to sd-stub, that uses early-boot efi variables for
+  storing, that can be used as fallback logic for tpm-less systems for disk
+  encryption, and swtpm state encryption.
 
 * sd-lldp: pick up 802.3 maximum frame size/mtu, to be able to detect jumbo
   frame capable networks
@@ -171,8 +184,6 @@ Features:
   reference implementation uses a different address syntax, which needs to be
   taken into account.
 
-* downgrade the uid/gid disposition enforcement in udev
-
 * have a signal that reloads every unit that supports reloading
 
 * systemd: add storage API via varlink, where everyone can drop a socket in a
@@ -198,7 +209,7 @@ Features:
   generates a random password, passes it as credential to sysusers for the root
   user, then displays it on screen. people can use this to remotely log in.
 
-* Maybe introducean InodeRef structure inspired by PidRef, which references a
+* Maybe introduce an InodeRef structure inspired by PidRef, which references a
   specific inode, and combines: a path, an O_PATH fd, and possibly a FID into
   one. Why? We often pass around path and fd separately in chaseat() and similar
   calls. Because passing around both separately is cumbersome we sometimes only
@@ -254,8 +265,6 @@ Features:
 * journald: log pidfid as another field, i.e. _PIDFDID=
 
 * measure all log-in attempts into a new nvpcr
-
-* measure all DDI activations into a new nvpcr
 
 * maybe rework systemd-modules-load to be a generator that just instantiates
   modprobe@.service a bunch of times
@@ -370,7 +379,6 @@ Features:
   root disks)
 
 * complete varlink introspection comments:
-  - io.systemd.BootControl
   - io.systemd.Hostname
   - io.systemd.ManagedOOM
   - io.systemd.Network
@@ -2320,8 +2328,6 @@ Features:
   - timer units should get the ability to trigger when DST changes
   - Modulate timer frequency based on battery state
 
-* add libsystemd-password or so to query passwords during boot using the password agent logic
-
 * clean up date formatting and parsing so that all absolute/relative timestamps we format can also be parsed
 
 * on shutdown: move utmp, wall, audit logic all into PID 1 (or logind?)
@@ -2664,11 +2670,6 @@ Features:
   partition on disk, but only if it is marked for growing and not read-only.
 
 * systemd-repart: read LUKS encryption key from $CREDENTIALS_DIRECTORY
-
-* systemd-repart: add a switch to factory reset the partition table without
-  immediately applying the new configuration again. i.e. --factory-reset=leave
-  or so. (this is useful to factory reset an image, then putting it into
-  another machine, ensuring that luks key is generated on new machine, not old)
 
 * systemd-repart: support setting up dm-integrity with HMAC
 

@@ -1,21 +1,21 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 #
 # A S Alam <amanpreet.alam@gmail.com>, 2020, 2021, 2023.
-# A S Alam <aalam@users.noreply.translate.fedoraproject.org>, 2023, 2024.
+# A S Alam <aalam@users.noreply.translate.fedoraproject.org>, 2023, 2024, 2026.
 msgid ""
 msgstr ""
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-02-24 18:42+0000\n"
-"PO-Revision-Date: 2024-01-16 14:35+0000\n"
+"POT-Creation-Date: 2026-03-06 03:46+0900\n"
+"PO-Revision-Date: 2026-03-07 01:58+0000\n"
 "Last-Translator: A S Alam <aalam@users.noreply.translate.fedoraproject.org>\n"
 "Language-Team: Punjabi <https://translate.fedoraproject.org/projects/systemd/"
-"master/pa/>\n"
+"main/pa/>\n"
 "Language: pa\n"
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
 "Plural-Forms: nplurals=2; plural=n > 1;\n"
-"X-Generator: Weblate 5.3.1\n"
+"X-Generator: Weblate 5.16.2\n"
 
 #: src/core/org.freedesktop.systemd1.policy.in:22
 msgid "Send passphrase back to system"
@@ -65,10 +65,9 @@ msgid "Dump the systemd state without rate limits"
 msgstr ""
 
 #: src/core/org.freedesktop.systemd1.policy.in:75
-#, fuzzy
 msgid ""
 "Authentication is required to dump the systemd state without rate limits."
-msgstr "systemd ਹਾਲਤ ਲੋਡ ਕਰਨ ਲਈ ਪਰਮਾਣਕਿਤਾ ਚਾਹੀਦੀ ਹੈ।"
+msgstr "ਬਿਨਾਂ ਰੇਟ ਲਿਮਟ ਦੇ systemd ਹਾਲਤ ਲੋਡ ਕਰਨ ਲਈ ਪਰਮਾਣਕਿਤਾ ਚਾਹੀਦੀ ਹੈ।"
 
 #: src/home/org.freedesktop.home1.policy:13
 msgid "Create a home area"
@@ -88,7 +87,7 @@ msgstr "ਵਰਤੋਂਕਾਰ ਦੇ ਹੋਮ ਖੇਤਰ ਨੂੰ ਹਟ�
 
 #: src/home/org.freedesktop.home1.policy:33
 msgid "Check credentials of a home area"
-msgstr ""
+msgstr "ਹੋਮ ਖੇਤਰ ਲਈ ਸਨਦਾਂ ਦੀ ਜਾਂਚ ਕਰੋ"
 
 #: src/home/org.freedesktop.home1.policy:34
 msgid ""
@@ -104,14 +103,12 @@ msgid "Authentication is required to update a user's home area."
 msgstr "ਵਰਤੋਂਕਾਰ ਦੇ ਹੋਮ ਖੇਤਰ ਨੂੰ ਅੱਪਡੇਟ ਕਰਨ ਲਈ ਪਰਮਾਣਿਕਤਾ ਚਾਹੀਦੀ ਹੈ।"
 
 #: src/home/org.freedesktop.home1.policy:53
-#, fuzzy
 msgid "Update your home area"
-msgstr "ਹੋਮ ਖੇਤਰ ਨੂੰ ਅੱਪਡੇਟ ਕਰੋ"
+msgstr "ਆਪਣੇ ਹੋਮ ਖੇਤਰ ਨੂੰ ਅੱਪਡੇਟ ਕਰੋ"
 
 #: src/home/org.freedesktop.home1.policy:54
-#, fuzzy
 msgid "Authentication is required to update your home area."
-msgstr "ਵਰਤੋਂਕਾਰ ਦੇ ਹੋਮ ਖੇਤਰ ਨੂੰ ਅੱਪਡੇਟ ਕਰਨ ਲਈ ਪਰਮਾਣਿਕਤਾ ਚਾਹੀਦੀ ਹੈ।"
+msgstr "ਤੁਹਾਡੇ ਹੋਮ ਖੇਤਰ ਨੂੰ ਅੱਪਡੇਟ ਕਰਨ ਲਈ ਪਰਮਾਣਿਕਤਾ ਚਾਹੀਦੀ ਹੈ।"
 
 #: src/home/org.freedesktop.home1.policy:63
 msgid "Resize a home area"
@@ -131,14 +128,12 @@ msgid ""
 msgstr "ਵਰਤੋਂਕਾਰ ਦੇ ਹੋਮ ਖੇਤਰ ਲਈ ਪਾਸਵਰਡ ਨੂੰ ਬਦਲਣ ਲਈ ਪਰਮਾਣਿਕਤਾ ਚਾਹੀਦੀ ਹੈ।"
 
 #: src/home/org.freedesktop.home1.policy:83
-#, fuzzy
 msgid "Activate a home area"
-msgstr "ਹੋਮ ਖੇਤਰ ਬਣਾਓ"
+msgstr "ਹੋਮ ਖੇਤਰ ਸਰਗਰਮ ਕਰੋ"
 
 #: src/home/org.freedesktop.home1.policy:84
-#, fuzzy
 msgid "Authentication is required to activate a user's home area."
-msgstr "ਵਰਤੋਂਕਾਰ ਦੇ ਹੋਮ ਖੇਤਰ ਨੂੰ ਬਣਾਉਣ ਲਈ ਪਰਮਾਣਿਕਤਾ ਚਾਹੀਦੀ ਹੈ।"
+msgstr "ਵਰਤੋਂਕਾਰ ਦੇ ਹੋਮ ਖੇਤਰ ਨੂੰ ਸਰਗਰਮ ਕਰਨ ਲਈ ਪਰਮਾਣਿਕਤਾ ਚਾਹੀਦੀ ਹੈ।"
 
 #: src/home/org.freedesktop.home1.policy:93
 msgid "Manage Home Directory Signing Keys"
@@ -355,40 +350,36 @@ msgstr "ਸਿਸਟਮ ਜਾਣਕਾਰੀ ਲੈਣ ਲਈ ਪਰਮਾਣ�
 
 #: src/import/org.freedesktop.import1.policy:22
 msgid "Import a disk image"
-msgstr ""
+msgstr "ਡਿਸਕ ਈਮੇਜ਼ ਨੂੰ ਇੰਪੋਰਟ ਕਰੋ"
 
 #: src/import/org.freedesktop.import1.policy:23
-#, fuzzy
 msgid "Authentication is required to import an image."
-msgstr "'$(unit)' ਨੂੰ ਸ਼ੁਰੂ ਕਰਨ ਲਈ ਪਰਮਾਣਕਿਤਾ ਚਾਹੀਦੀ ਹੈ।"
+msgstr "ਈਮੇਲ ਨੂੰ ਇੰਪੋਰਟ ਕਰਨ ਲਈ ਪਰਮਾਣਕਿਤਾ ਚਾਹੀਦੀ ਹੈ।"
 
 #: src/import/org.freedesktop.import1.policy:32
 msgid "Export a disk image"
-msgstr ""
+msgstr "ਡਿਸਕ ਈਮੇਜ਼ ਨੂੰ ਐਕਸਪੋਰਟ ਕਰੋ"
 
 #: src/import/org.freedesktop.import1.policy:33
-#, fuzzy
 msgid "Authentication is required to export disk image."
-msgstr "ਸਿਸਟਮ ਟਾਈਮ ਸੈੱਟ ਕਰਨ ਲਈ ਪਰਮਾਣਕਿਤਾ ਚਾਹੀਦੀ ਹੈ।"
+msgstr "ਡਿਸਕ ਈਮੇਜ਼ ਨੂੰ ਐਕਸਪੋਰਟ ਕਰਨ ਲਈ ਪਰਮਾਣਕਿਤਾ ਚਾਹੀਦੀ ਹੈ।"
 
 #: src/import/org.freedesktop.import1.policy:42
 msgid "Download a disk image"
-msgstr ""
+msgstr "ਡਿਸਕ ਈਮੇਜ਼ ਨੂੰ ਡਾਊਨਲੋਡ ਕਰੋ"
 
 #: src/import/org.freedesktop.import1.policy:43
-#, fuzzy
 msgid "Authentication is required to download a disk image."
-msgstr "systemd ਹਾਲਤ ਲੋਡ ਕਰਨ ਲਈ ਪਰਮਾਣਕਿਤਾ ਚਾਹੀਦੀ ਹੈ।"
+msgstr "ਡਿਸਕ ਈਮੇਜ਼ ਨੂੰ ਡਾਊਨਲੋਡ ਕਰਨ ਲਈ ਪਰਮਾਣਕਿਤਾ ਚਾਹੀਦੀ ਹੈ।"
 
 #: src/import/org.freedesktop.import1.policy:52
 msgid "Cancel transfer of a disk image"
-msgstr ""
+msgstr "ਡਿਸਕ ਈਮੇਜ਼ ਟਰਾਂਸਫਰ ਨੂੰ ਰੱਦ ਕਰੋ"
 
 #: src/import/org.freedesktop.import1.policy:53
-#, fuzzy
 msgid ""
 "Authentication is required to cancel the ongoing transfer of a disk image."
-msgstr "ਵਰਤੋਂਕਾਰ ਦੇ ਹੋਮ ਖੇਤਰ ਲਈ ਪਾਸਵਰਡ ਨੂੰ ਬਦਲਣ ਲਈ ਪਰਮਾਣਿਕਤਾ ਚਾਹੀਦੀ ਹੈ।"
+msgstr "ਚੱਲ ਰਹੇ ਡਿਸਕ ਈਮੇਜ਼ ਟਰਾਂਸਫਰ ਨੂੰ ਰੱਦ ਕਰਨ ਲਈ ਪਰਮਾਣਿਕਤਾ ਚਾਹੀਦੀ ਹੈ।"
 
 #: src/locale/org.freedesktop.locale1.policy:22
 msgid "Set system locale"
@@ -538,7 +529,7 @@ msgstr "ਸਿਸਟਮ ਨੂੰ ਬੰਦ ਕਰੋ"
 
 #: src/login/org.freedesktop.login1.policy:170
 msgid "Authentication is required to power off the system."
-msgstr ""
+msgstr "ਸਿਸਟਮ ਨੂੰ ਬੰਦ ਕਰਨ ਲਈ ਪਰਮਾਣਕਿਤਾ ਚਾਹੀਦੀ ਹੈ।"
 
 #: src/login/org.freedesktop.login1.policy:180
 msgid "Power off the system while other users are logged in"
@@ -566,17 +557,18 @@ msgstr "ਸਿਸਟਮ ਨੂੰ ਮੁੜ ਚਾਲੂ ਕਰੋ"
 
 #: src/login/org.freedesktop.login1.policy:203
 msgid "Authentication is required to reboot the system."
-msgstr ""
+msgstr "ਸਿਸਟਮ ਨੂੰ ਮੁੜ-ਚਾਲੂ ਕਰਨ ਲਈ ਪਰਮਾਣਕਿਤਾ ਚਾਹੀਦੀ ਹੈ।"
 
 #: src/login/org.freedesktop.login1.policy:213
 msgid "Reboot the system while other users are logged in"
-msgstr ""
+msgstr "ਜਦੋਂ ਹੋਰ ਵਰਤੋਂਕਾਰ ਲਾਗਇਨ ਕੀਤੇ ਹੋਣ ਤਾਂ ਵੀ ਸਿਸਟਮ ਨੂੰ ਮੁੜ-ਚਾਲੂ ਕਰੋ"
 
 #: src/login/org.freedesktop.login1.policy:214
 msgid ""
 "Authentication is required to reboot the system while other users are logged "
 "in."
 msgstr ""
+"ਜਦੋਂ ਹੋਰ ਵਰਤੋਂਕਾਰ ਲਾਗਇਨ ਕੀਤੇ ਹੋਣ ਤਾਂ ਸਿਸਟਮ ਨੂੰ ਮੁੜ-ਚਾਲੂ ਕਰਨ ਲਈ ਪਰਮਾਣਕਿਤਾ ਚਾਹੀਦੀ ਹੈ।"
 
 #: src/login/org.freedesktop.login1.policy:224
 msgid "Reboot the system while an application is inhibiting this"
@@ -594,7 +586,7 @@ msgstr "ਸਿਸਟਮ ਨੂੰ ਰੋਕ ਦਿਓ"
 
 #: src/login/org.freedesktop.login1.policy:236
 msgid "Authentication is required to halt the system."
-msgstr ""
+msgstr "ਸਿਸਟਮ ਨੂੰ ਰੋਕਣ ਲਈ ਪਰਮਾਣਕਿਤਾ ਚਾਹੀਦੀ ਹੈ।"
 
 #: src/login/org.freedesktop.login1.policy:246
 msgid "Halt the system while other users are logged in"
@@ -941,8 +933,14 @@ msgid "DHCP server sends force renew message"
 msgstr ""
 
 #: src/network/org.freedesktop.network1.policy:144
-msgid "Authentication is required to send force renew message."
-msgstr ""
+#, fuzzy
+#| msgid ""
+#| "Authentication is required to send the entered passphrase back to the "
+#| "system."
+msgid ""
+"Authentication is required to send a force renew message from the DHCP "
+"server."
+msgstr "ਦਿੱਤਾ ਵਾਕ ਸਿਸਟਮ ਨੂੰ ਵਾਪਸ ਭੇਜਣ ਲਈ ਪਰਮਾਣਕਿਤਾ ਚਾਹੀਦੀ ਹੈ।"
 
 #: src/network/org.freedesktop.network1.policy:154
 msgid "Renew dynamic addresses"
