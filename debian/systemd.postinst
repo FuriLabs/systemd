@@ -63,6 +63,9 @@ if [ -z "$2" ]; then
     systemctl ${DPKG_ROOT:+--root="$DPKG_ROOT"} enable systemd-pstore.service || true
 fi
 
+# This is no longer statically enabled since v260
+systemctl ${DPKG_ROOT:+--root="$DPKG_ROOT"} enable getty@.service || true
+
 # Create /etc/machine-id
 systemd-machine-id-setup ${DPKG_ROOT:+--root="$DPKG_ROOT"}
 
