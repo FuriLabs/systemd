@@ -1,3 +1,14 @@
+systemd (260~rc3-1) unstable; urgency=medium
+
+  * Update upstream source from tag 'upstream/260_rc3' Update to upstream
+    version '260~rc3' with Debian dir
+    f6c43648041c7fb3cf25ec3a0ff83157bcbf9c17
+    Fixes:
+    https://github.com/systemd/systemd/security/advisories/GHSA-4h6x-r8vx-3862
+  * Really enable getty@ via packaging scriptlets (Closes: #1130457)
+
+ -- Luca Boccassi <bluca@debian.org>  Thu, 12 Mar 2026 18:19:48 +0000
+
 systemd (260~rc2-1) unstable; urgency=high
 
   * Remove build-depend on rsync, meson is new enough
