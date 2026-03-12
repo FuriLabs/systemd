@@ -40,7 +40,7 @@
 #include "unit-name.h"
 #include "user-util.h"
 
-enum {
+static enum {
         ACTION_DEFAULT,
         ACTION_MOUNT,
         ACTION_AUTOMOUNT,
@@ -348,6 +348,7 @@ static int parse_argv(int argc, char *argv[]) {
                         if (r < 0)
                                 return log_error_errno(r, "Failed to parse timeout: %s", optarg);
 
+                        arg_timeout_idle_set = true;
                         break;
 
                 case ARG_AUTOMOUNT_PROPERTY:
@@ -1321,10 +1322,8 @@ static int acquire_removable(sd_device *d) {
                         return r;
 
                 r = device_in_subsystem(d, "block");
-                if (r < 0)
+                if (r <= 0)
                         return r;
-                if (r == 0)
-                        return 0;
         }
 
         if (parse_boolean(v) <= 0)

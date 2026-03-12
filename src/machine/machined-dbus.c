@@ -26,6 +26,7 @@
 #include "machine.h"
 #include "machine-dbus.h"
 #include "machined.h"
+#include "machined-dbus.h"
 #include "namespace-util.h"
 #include "operation.h"
 #include "os-util.h"
@@ -315,10 +316,8 @@ static int machine_add_from_params(
                                 details,
                                 &manager->polkit_registry,
                                 error);
-                if (r < 0)
-                        return r;
-                if (r == 0)
-                        return 0; /* Will call us back */
+                if (r <= 0)
+                        return r; /* 0 means Polkit will call us back, see method_create_machine() */
         }
 
         r = manager_add_machine(manager, name, &m);
@@ -434,7 +433,7 @@ static int method_create_or_register_machine(
                 c = _MACHINE_CLASS_INVALID;
         else {
                 c = machine_class_from_string(class);
-                if (c < 0)
+                if (c < 0 || !IN_SET(c, MACHINE_CONTAINER, MACHINE_VM))
                         return sd_bus_error_set(error, SD_BUS_ERROR_INVALID_ARGS, "Invalid machine class parameter");
         }
 
@@ -609,7 +608,7 @@ static int method_create_or_register_machine_ex(
                 c = _MACHINE_CLASS_INVALID;
         else {
                 c = machine_class_from_string(class);
-                if (c < 0)
+                if (c < 0 || !IN_SET(c, MACHINE_CONTAINER, MACHINE_VM))
                         return sd_bus_error_set(error, SD_BUS_ERROR_INVALID_ARGS, "Invalid machine class parameter");
         }
 
@@ -1219,7 +1218,7 @@ static int method_map_to_machine_group(sd_bus_message *message, void *userdata, 
         return sd_bus_reply_method_return(message, "sou", machine->name, o, (uint32_t) converted);
 }
 
-const sd_bus_vtable manager_vtable[] = {
+static const sd_bus_vtable manager_vtable[] = {
         SD_BUS_VTABLE_START(0),
 
         SD_BUS_PROPERTY("PoolPath", "s", property_get_pool_path, 0, 0),
@@ -1451,8 +1450,8 @@ const BusObjectImplementation manager_object = {
         "/org/freedesktop/machine1",
         "org.freedesktop.machine1.Manager",
         .vtables = BUS_VTABLES(manager_vtable),
-        .children = BUS_IMPLEMENTATIONS( &machine_object,
-                                         &image_object ),
+        .children = BUS_IMPLEMENTATIONS(&machine_object,
+                                        &image_object),
 };
 
 int match_job_removed(sd_bus_message *message, void *userdata, sd_bus_error *error) {
