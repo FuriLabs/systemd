@@ -1,3 +1,11 @@
+systemd (260~rc4-1) unstable; urgency=medium
+
+  * Update upstream source from tag 'upstream/260_rc4' Update to upstream
+    version '260~rc4' with Debian dir
+    12b11c935aadac455a5c179ea9e18eeefc79011d
+
+ -- Luca Boccassi <bluca@debian.org>  Fri, 13 Mar 2026 23:11:28 +0000
+
 systemd (260~rc3-1) unstable; urgency=medium
 
   * Update upstream source from tag 'upstream/260_rc3' Update to upstream
