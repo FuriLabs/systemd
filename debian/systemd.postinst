@@ -58,13 +58,15 @@ fi
 
 # Enable getty, remote-fs.target and systemd-pstore by default on new installs
 if [ -z "$2" ]; then
-    systemctl ${DPKG_ROOT:+--root="$DPKG_ROOT"} enable getty@tty1.service || true
     systemctl ${DPKG_ROOT:+--root="$DPKG_ROOT"} enable remote-fs.target || true
     systemctl ${DPKG_ROOT:+--root="$DPKG_ROOT"} enable systemd-pstore.service || true
 fi
 
 # This is no longer statically enabled since v260
-systemctl ${DPKG_ROOT:+--root="$DPKG_ROOT"} enable getty@.service || true
+# Enable autovt@.service and getty@tty1 on upgrades and new installs
+if dpkg --compare-versions "$2" lt "260~rc4-2~"; then
+    systemctl ${DPKG_ROOT:+--root="$DPKG_ROOT"} enable getty@.service || true
+fi
 
 # Create /etc/machine-id
 systemd-machine-id-setup ${DPKG_ROOT:+--root="$DPKG_ROOT"}
