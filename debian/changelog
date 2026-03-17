@@ -1,3 +1,20 @@
+systemd (260-1) unstable; urgency=medium
+
+  [ Luca Boccassi ]
+  * Switch from libselinux1-dev to libselinux-dev
+  * Update upstream source from tag 'upstream/260' Update to upstream
+    version '260' with Debian dir ffda0e8c4d24fb5963cbd3123c86a0047d3d0856
+    For more information, see:
+    https://github.com/systemd/systemd/releases/tag/v260
+
+  [ Michael Biebl ]
+  * Do not run "systemctl enable getty@.service" unconditionally. This
+    creates autovt@.service and getty@tty1.service which conflicts with
+    kmscon. So do not run it on every upgrade but only on new installs and
+    as a one-time upgrade for versions older than v260. (Closes: #1130765)
+
+ -- Luca Boccassi <bluca@debian.org>  Tue, 17 Mar 2026 20:10:01 +0000
+
 systemd (260~rc4-1) unstable; urgency=medium
 
   * Update upstream source from tag 'upstream/260_rc4' Update to upstream
