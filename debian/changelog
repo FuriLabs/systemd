@@ -1,3 +1,14 @@
+systemd (260.1-1) unstable; urgency=medium
+
+  * Add lpadmin group to basic.conf sysusers.d as requested by CUPS
+    maintainer
+  * Install basic.conf in sd-standalone-sysusers package
+  * Update upstream source from tag 'upstream/260.1' Update to upstream
+    version '260.1' with Debian dir
+    38d56d2e92a70e3fb25e78976e8b0382e2b1a70a
+
+ -- Luca Boccassi <bluca@debian.org>  Mon, 23 Mar 2026 13:27:09 +0000
+
 systemd (260-1) unstable; urgency=medium
 
   [ Luca Boccassi ]
