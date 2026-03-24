@@ -70,7 +70,7 @@ usr/lib/udev/rules.d/90-iocost.rules
 usr/share/bash-completion/completions/udevadm
 <pkg.systemd.upstream> usr/share/bash-completion/completions/systemd-hwdb
 usr/share/zsh/vendor-completions/_udevadm
-<pkg.systemd.upstream> usr/share/bash-completion/completions/systemd-hwdb
+<pkg.systemd.upstream> usr/share/zsh/vendor-completions/_systemd-hwdb
 ../extra/initramfs-tools usr/share/
 ../extra/rules/*.rules usr/lib/udev/rules.d/
 ../extra/network/*.link usr/lib/systemd/network/
