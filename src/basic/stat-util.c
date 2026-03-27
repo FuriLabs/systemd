@@ -22,6 +22,8 @@
 #include "string-util.h"
 #include "time-util.h"
 
+#define NO_STATX_MNT_ID 1
+
 static int verify_stat_at(
                 int fd,
                 const char *path,
@@ -360,8 +362,10 @@ int xstatx_full(int fd,
                 return r;
 
         unsigned request_mask = mandatory_mask|optional_mask;
+#ifndef NO_STATX_MNT_ID
         if (FLAGS_SET(xstatx_flags, XSTATX_MNT_ID_BEST))
                 request_mask |= STATX_MNT_ID|STATX_MNT_ID_UNIQUE;
+#endif
 
         if (statx(fd,
                   strempty(path),
@@ -370,9 +374,11 @@ int xstatx_full(int fd,
                   &sx) < 0)
                 return negative_errno();
 
+#ifndef NO_STATX_MNT_ID
         if (FLAGS_SET(xstatx_flags, XSTATX_MNT_ID_BEST) &&
             !(sx.stx_mask & (STATX_MNT_ID|STATX_MNT_ID_UNIQUE)))
                 return log_debug_errno(SYNTHETIC_ERRNO(EUNATCH), "statx() did not return either STATX_MNT_ID or STATX_MNT_ID_UNIQUE.");
+#endif
 
         if (!FLAGS_SET(sx.stx_mask, mandatory_mask)) {
                 if (DEBUG_LOGGING) {
