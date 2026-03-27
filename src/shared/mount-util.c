@@ -39,6 +39,9 @@
 #include "tmpfile-util.h"
 #include "user-util.h"
 
+/* Flip this to 0 to restore the current new mount API code path. */
+#define EXEC_CREDENTIAL_USE_OLD_MOUNT_API 1
+
 int umount_recursive_full(const char *prefix, int flags, char **keep) {
 #if HAVE_LIBMOUNT
         _cleanup_fclose_ FILE *f = NULL;
@@ -2000,6 +2003,64 @@ int fsmount_credentials_fs(int *ret_fsfd) {
 }
 
 int mount_credentials_fs(const char *path) {
+#if EXEC_CREDENTIAL_USE_OLD_MOUNT_API
+        _cleanup_free_ char *opts = NULL;
+        int r, noswap_supported;
+
+        assert(path);
+
+        /* Mounts a file system we can place credentials in, i.e. with tight access modes right from the
+         * beginning, and ideally swapping turned off. In order of preference:
+         *
+         *      1. tmpfs if it supports "noswap"
+         *      2. ramfs
+         *      3. tmpfs if it doesn't support "noswap"
+         */
+
+        noswap_supported = mount_option_supported("tmpfs", "noswap", NULL); /* Check explicitly to avoid kmsg noise */
+        if (noswap_supported > 0) {
+                _cleanup_free_ char *noswap_opts = NULL;
+
+                if (asprintf(&noswap_opts,
+                             "mode=0700,nr_inodes=1024,size=%zu,noswap",
+                             (size_t) CREDENTIALS_TOTAL_SIZE_MAX) < 0)
+                        return -ENOMEM;
+
+                /* Best case: tmpfs with noswap */
+                r = mount_nofollow_verbose(
+                                LOG_DEBUG,
+                                "tmpfs",
+                                path,
+                                "tmpfs",
+                                credentials_fs_mount_flags(/* ro= */ false),
+                                noswap_opts);
+                if (r >= 0)
+                        return r;
+        }
+
+        r = mount_nofollow_verbose(
+                        LOG_DEBUG,
+                        "ramfs",
+                        path,
+                        "ramfs",
+                        credentials_fs_mount_flags(/* ro= */ false),
+                        "mode=0700");
+        if (r >= 0)
+                return r;
+
+        if (asprintf(&opts,
+                     "mode=0700,nr_inodes=1024,size=%zu",
+                     (size_t) CREDENTIALS_TOTAL_SIZE_MAX) < 0)
+                return -ENOMEM;
+
+        return mount_nofollow_verbose(
+                        LOG_DEBUG,
+                        "tmpfs",
+                        path,
+                        "tmpfs",
+                        credentials_fs_mount_flags(/* ro= */ false),
+                        opts);
+#else
         _cleanup_close_ int mfd = -EBADF;
 
         assert(path);
@@ -2009,6 +2070,7 @@ int mount_credentials_fs(const char *path) {
                 return mfd;
 
         return RET_NERRNO(move_mount(mfd, "", AT_FDCWD, path, MOVE_MOUNT_F_EMPTY_PATH));
+#endif
 }
 
 int make_fsmount(
