@@ -28,6 +28,8 @@
  * when /proc/self/fd/ is inaccessible. */
 #define MAX_FD_LOOP_LIMIT (1024*1024)
 
+#define NO_STATX
+
 int close_nointr(int fd) {
         assert(fd >= 0);
 
@@ -1073,6 +1075,37 @@ int path_is_root_at(int dir_fd, const char *path) {
 }
 
 int fds_inode_and_mount_same(int fd1, int fd2) {
+#ifdef NO_STATX
+        struct stat st1, st2;
+        int r;
+
+        assert(fd1 >= 0 || IN_SET(fd1, AT_FDCWD, XAT_FDROOT));
+        assert(fd2 >= 0 || IN_SET(fd2, AT_FDCWD, XAT_FDROOT));
+
+        if (fd1 == XAT_FDROOT)
+                r = RET_NERRNO(stat("/", &st1));
+        else if (fd1 == AT_FDCWD)
+                r = RET_NERRNO(stat(".", &st1));
+        else
+                r = RET_NERRNO(fstat(fd1, &st1));
+        if (r < 0)
+                return r;
+
+        if (fd1 == fd2)
+                return true;
+
+        if (fd2 == XAT_FDROOT)
+                r = RET_NERRNO(stat("/", &st2));
+        else if (fd2 == AT_FDCWD)
+                r = RET_NERRNO(stat(".", &st2));
+        else
+                r = RET_NERRNO(fstat(fd2, &st2));
+        if (r < 0)
+                return r;
+
+        return stat_inode_same(&st1, &st2);
+
+#else
         struct statx sx1, sx2;
         int r;
 
@@ -1099,6 +1132,7 @@ int fds_inode_and_mount_same(int fd1, int fd2) {
                 return r;
 
         return statx_inode_same(&sx1, &sx2);
+#endif
 }
 
 int resolve_xat_fdroot(int *fd, const char **path, char **ret_buffer) {
