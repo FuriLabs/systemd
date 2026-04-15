@@ -134,7 +134,7 @@ usr/lib/systemd/systemd-quotacheck
 usr/lib/systemd/systemd-random-seed
 usr/lib/systemd/systemd-remount-fs
 usr/lib/systemd/systemd-reply-password
-usr/lib/systemd/systemd-report
+usr/lib/systemd/systemd-report*
 usr/lib/systemd/systemd-rfkill
 usr/lib/systemd/systemd-shutdown
 usr/lib/systemd/systemd-sleep
@@ -314,8 +314,7 @@ usr/lib/systemd/system/systemd-battery-check.service
 usr/lib/systemd/system/systemd-binfmt.service
 usr/lib/systemd/system/systemd-boot-check-no-failures.service
 <!stage1> usr/lib/systemd/system/systemd-bsod.service
-usr/lib/systemd/system/systemd-confext.service
-usr/lib/systemd/system/systemd-confext-initrd.service
+usr/lib/systemd/system/systemd-confext*
 usr/lib/systemd/system/systemd-creds.socket
 usr/lib/systemd/system/systemd-creds@.service
 usr/lib/systemd/system/systemd-exit.service
@@ -389,6 +388,7 @@ usr/lib/systemd/system/systemd-quotacheck*.service
 usr/lib/systemd/system/systemd-random-seed.service
 usr/lib/systemd/system/systemd-reboot.service
 usr/lib/systemd/system/systemd-remount-fs.service
+<pkg.systemd.upstream> usr/lib/systemd/system/systemd-report*
 usr/lib/systemd/system/systemd-rfkill.service
 usr/lib/systemd/system/systemd-rfkill.socket
 usr/lib/systemd/system/systemd-soft-reboot.service
@@ -396,10 +396,7 @@ usr/lib/systemd/system/systemd-storagetm.service
 usr/lib/systemd/system/systemd-suspend.service
 usr/lib/systemd/system/systemd-suspend-then-hibernate.service
 usr/lib/systemd/system/systemd-sysctl.service
-usr/lib/systemd/system/systemd-sysext.service
-usr/lib/systemd/system/systemd-sysext@.service
-usr/lib/systemd/system/systemd-sysext-initrd.service
-usr/lib/systemd/system/systemd-sysext.socket
+usr/lib/systemd/system/systemd-sysext*
 usr/lib/systemd/system/systemd-sysusers.service
 usr/lib/systemd/system/systemd-timedated.service
 usr/lib/systemd/system/systemd-tmpfiles-clean.service
@@ -477,6 +474,7 @@ usr/lib/tmpfiles.d/credstore.conf
 usr/lib/tmpfiles.d/home.conf
 usr/lib/tmpfiles.d/journal-nocow.conf
 usr/lib/tmpfiles.d/provision.conf
+<pkg.systemd.upstream> usr/lib/tmpfiles.d/root.conf
 usr/lib/tmpfiles.d/systemd.conf
 usr/lib/tmpfiles.d/systemd-network.conf
 usr/lib/tmpfiles.d/systemd-nologin.conf
