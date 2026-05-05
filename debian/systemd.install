@@ -50,6 +50,7 @@ usr/bin/systemd-run
 usr/bin/systemd-socket-activate
 usr/bin/systemd-stdio-bridge
 usr/bin/systemd-sysext
+<pkg.systemd.upstream> usr/bin/systemd-sysinstall
 usr/bin/systemd-sysusers
 usr/bin/systemd-tmpfiles
 usr/bin/systemd-tty-ask-password-agent
@@ -299,6 +300,8 @@ usr/lib/systemd/system/sysinit.target.wants/systemd-tmpfiles-setup.service
 [amd64 i386 arm64 armhf riscv64 loong64] <!stage1> usr/lib/systemd/system/sysinit.target.wants/systemd-tpm2-setup.service
 usr/lib/systemd/system/sysinit.target.wants/systemd-update-done.service
 <!stage1> usr/lib/systemd/system/sysinit.target.wants/imports.target
+<pkg.systemd.upstream> usr/lib/systemd/system/system-install.target
+<pkg.systemd.upstream> usr/lib/systemd/system/system-install.target.wants/systemd-sysinstall.service
 usr/lib/systemd/system/sys-kernel-config.mount
 usr/lib/systemd/system/sys-kernel-debug.mount
 usr/lib/systemd/system/sys-kernel-tracing.mount
@@ -397,6 +400,7 @@ usr/lib/systemd/system/systemd-suspend.service
 usr/lib/systemd/system/systemd-suspend-then-hibernate.service
 usr/lib/systemd/system/systemd-sysctl.service
 usr/lib/systemd/system/systemd-sysext*
+<pkg.systemd.upstream> usr/lib/systemd/system/systemd-sysinstall.service
 usr/lib/systemd/system/systemd-sysusers.service
 usr/lib/systemd/system/systemd-timedated.service
 usr/lib/systemd/system/systemd-tmpfiles-clean.service
@@ -507,6 +511,7 @@ usr/share/bash-completion/completions/systemd-delta
 usr/share/bash-completion/completions/systemd-detect-virt
 usr/share/bash-completion/completions/systemd-dissect
 usr/share/bash-completion/completions/systemd-id128
+<pkg.systemd.upstream> usr/share/bash-completion/completions/systemd-sysinstall
 usr/share/bash-completion/completions/systemd-path
 usr/share/bash-completion/completions/systemd-run
 usr/share/bash-completion/completions/systemd-sysext
@@ -564,6 +569,7 @@ usr/share/zsh/vendor-completions/_systemd-analyze
 usr/share/zsh/vendor-completions/_systemd-delta
 usr/share/zsh/vendor-completions/_systemd-id128
 usr/share/zsh/vendor-completions/_systemd-inhibit
+<pkg.systemd.upstream> usr/share/zsh/vendor-completions/_systemd-sysinstall
 usr/share/zsh/vendor-completions/_systemd-path
 usr/share/zsh/vendor-completions/_systemd-run
 usr/share/zsh/vendor-completions/_systemd-tmpfiles

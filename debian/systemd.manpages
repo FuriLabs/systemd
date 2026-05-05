@@ -257,6 +257,8 @@ debian/tmp/usr/share/man/man8/systemd-sysctl.service.8
 debian/tmp/usr/share/man/man8/systemd-sysext.8
 debian/tmp/usr/share/man/man8/systemd-sysext.service.8
 debian/tmp/usr/share/man/man8/systemd-sysext-initrd.service.8
+<pkg.systemd.upstream> debian/tmp/usr/share/man/man8/systemd-sysinstall.8
+<pkg.systemd.upstream> debian/tmp/usr/share/man/man8/systemd-sysinstall.service.8
 <pkg.systemd.upstream> debian/tmp/usr/share/man/man8/systemd-sysext-sysroot.service.8
 debian/tmp/usr/share/man/man8/systemd-system-update-generator.8
 debian/tmp/usr/share/man/man8/systemd-sysusers.8
