@@ -3,6 +3,7 @@ usr/bin/importctl
 <pkg.systemd.upstream> usr/bin/storagectl
 <pkg.systemd.upstream> usr/bin/updatectl
 usr/bin/systemd-mstack
+<pkg.systemd.upstream> usr/bin/systemd-sysupdate
 usr/bin/systemd-vmspawn
 usr/lib/systemd/system/systemd-vmspawn@.service
 usr/bin/machinectl
