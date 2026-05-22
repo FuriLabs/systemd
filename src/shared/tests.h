@@ -101,7 +101,6 @@ typedef struct TestFunc {
 
 /* See static-destruct.h for an explanation of how this works. */
 #define REGISTER_TEST(func, ...)                                                                        \
-        _Pragma("GCC diagnostic ignored \"-Wattributes\"")                                              \
         _section_("SYSTEMD_TEST_TABLE") _alignptr_ _used_ _retain_ _variable_no_sanitize_address_       \
         static const TestFunc UNIQ_T(static_test_table_entry, UNIQ) = {                                 \
                 .f = (union f) &(func),                                                                 \
@@ -473,6 +472,18 @@ _noreturn_ void log_test_failed_internal(const char *file, int line, const char 
         ({                                                                                                      \
                 const char *_expr1 = (expr1), *_expr2 = (expr2);                                                \
                 if (!streq_ptr(_expr1, _expr2))                                                                 \
+                        log_test_failed("Expected \"%s == %s\", got \"%s != %s\"",                              \
+                                        #expr1, #expr2, strnull(_expr1), strnull(_expr2));                      \
+        })
+#endif
+
+#ifdef __COVERITY__
+#  define ASSERT_PATH_EQ(expr1, expr2) __coverity_check__(path_equal((expr1), (expr2)))
+#else
+#  define ASSERT_PATH_EQ(expr1, expr2)                                                                          \
+        ({                                                                                                      \
+                const char *_expr1 = (expr1), *_expr2 = (expr2);                                                \
+                if (!path_equal(_expr1, _expr2))                                                                 \
                         log_test_failed("Expected \"%s == %s\", got \"%s != %s\"",                              \
                                         #expr1, #expr2, strnull(_expr1), strnull(_expr2));                      \
         })

@@ -1387,7 +1387,7 @@ testcase_15_wait_online_dns() {
         echo "===== journalctl -u $unit ====="
         journalctl -b --no-pager --no-hostname --full -u "$unit"
         echo "=========="
-        rm -f "$override"
+        rm -f "$override" "$cursor_file"
         restart_resolved
         resolvectl revert dns0
     }
@@ -1396,6 +1396,7 @@ testcase_15_wait_online_dns() {
 
     local unit
     local override
+    local cursor_file
 
     unit="wait-online-dns-$(systemd-id128 new -u).service"
     override="/run/systemd/resolved.conf.d/90-global-dns.conf"
@@ -1416,12 +1417,26 @@ testcase_15_wait_online_dns() {
     systemctl stop systemd-resolved.service
     systemctl start systemd-resolved-monitor.socket systemd-resolved-varlink.socket
 
+    # Capture a journal cursor before starting the unit so we can match only on
+    # log messages emitted afterwards. We deliberately do not filter on
+    # _SYSTEMD_UNIT= because journald may attach stale cgroup metadata
+    # (e.g. _SYSTEMD_UNIT=init.scope) to the very first messages emitted by a
+    # freshly-spawned process, before its cgroup migration into the new service
+    # is observed. Filtering by SYSLOG_IDENTIFIER and a cursor is not affected
+    # by that race.
+    cursor_file=$(mktemp)
+    journalctl -n 0 --cursor-file="$cursor_file"
+
     # Begin systemd-networkd-wait-online --dns
     systemd-run -u "$unit" -p "Environment=SYSTEMD_LOG_LEVEL=debug" -p "Environment=SYSTEMD_LOG_TARGET=journal" --service-type=exec \
         /usr/lib/systemd/systemd-networkd-wait-online --timeout=0 --dns --interface=dns0
 
-    # Wait until it blocks waiting for updated DNS config
-    timeout 30 bash -c "journalctl -b -u $unit -f | grep -m1 'dns0: No.*DNS server is accessible'" >/dev/null
+    # Wait until it blocks waiting for updated DNS config.
+    # Note: don't use 'journalctl -f | grep -m1 ...' here. Once grep exits on
+    # match, journalctl -f will only notice the closed pipe on its next write
+    # attempt, which may never come for an otherwise idle unit, causing the
+    # pipeline to hang.
+    timeout 30 bash -c "until journalctl --after-cursor=\"\$(cat \"$cursor_file\")\" SYSLOG_IDENTIFIER=systemd-networkd-wait-online --grep 'dns0: No.*DNS server is accessible' >/dev/null 2>&1; do sleep 0.5; done"
 
     # Update the global configuration. Restart rather than reload systemd-resolved so that
     # systemd-networkd-wait-online has to re-connect to the varlink service.
@@ -1436,10 +1451,10 @@ testcase_15_wait_online_dns() {
     journalctl --sync
 
     # Check that a disconnect happened, and was handled.
-    journalctl -b -u "$unit" --grep="DNS configuration monitor disconnected, reconnecting..." >/dev/null
+    journalctl --after-cursor="$(cat "$cursor_file")" SYSLOG_IDENTIFIER=systemd-networkd-wait-online --grep="DNS configuration monitor disconnected, reconnecting..." >/dev/null
 
     # Check that dns0 was found to be online.
-    journalctl -b -u "$unit" --grep="dns0: link is configured by networkd and online." >/dev/null
+    journalctl --after-cursor="$(cat "$cursor_file")" SYSLOG_IDENTIFIER=systemd-networkd-wait-online --grep="dns0: link is configured by networkd and online." >/dev/null
 }
 
 testcase_delegate() {
@@ -1485,6 +1500,55 @@ EOF
     # Should work again without delegation in the mix
     run resolvectl query delegation.exercise.test
     grep -qF "1.2.3.4" "$RUN_OUT"
+}
+
+testcase_static_record() {
+    mkdir -p /run/systemd/resolve/static.d/
+    cat >/run/systemd/resolve/static.d/statictest.rr <<EOF
+{
+        "key": { "name" : "statictest.waldo", "type" : 1 },
+        "address" : [ 5, 7, 9, 11 ]
+}
+EOF
+    cat >/run/systemd/resolve/static.d/statictest2.rr <<EOF
+[
+        {
+                "key": { "name" : "statictest2.waldo", "type" : 1 },
+                "address" : [ 5, 7, 9, 12 ]
+        },
+        {
+                "key": { "name" : "statictest2.waldo", "type" : 28 },
+                "address" : [ 10, 11, 10, 11, 10, 11, 10, 11, 10, 11, 10, 11, 10, 11, 10, 12 ]
+        }
+]
+EOF
+    cat >/run/systemd/resolve/static.d/garbage.rr <<EOF
+[
+        {
+                "key": { "name" : "invalid...domain", "type" : 1 },
+                "address" : [ 5, 7, 9, 12 ]
+        },
+]
+EOF
+    cat >/run/systemd/resolve/static.d/garbage2.rr <<EOF
+[
+        {
+                "key": { "name" : "piff", "type" : 9 },
+        },
+]
+EOF
+
+    systemctl reload systemd-resolved
+
+    run resolvectl query statictest.waldo
+    grep -qF 5.7.9.11 "$RUN_OUT"
+
+    run resolvectl query statictest2.waldo
+    grep -qF 5.7.9.12 "$RUN_OUT"
+    grep -qF a0b:a0b:a0b:a0b:a0b:a0b:a0b:a0c "$RUN_OUT"
+
+    rm /run/systemd/resolve/static.d/statictest*.rr /run/systemd/resolve/static.d/garbage*.rr
+    systemctl reload systemd-resolved
 }
 
 # PRE-SETUP
