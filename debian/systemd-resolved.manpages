@@ -9,6 +9,6 @@ debian/tmp/usr/share/man/man5/systemd.dns-delegate.5
 debian/tmp/usr/share/man/man5/systemd.dnssd.5
 debian/tmp/usr/share/man/man5/systemd.negative.5
 debian/tmp/usr/share/man/man5/systemd.positive.5
-<pkg.systemd.upstream> debian/tmp/usr/share/man/man5/systemd.rr.5
+debian/tmp/usr/share/man/man5/systemd.rr.5
 debian/tmp/usr/share/man/man8/systemd-resolved.8
 debian/tmp/usr/share/man/man8/systemd-resolved.service.8
