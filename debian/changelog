@@ -1,3 +1,39 @@
+systemd (261~rc1-1) unstable; urgency=medium
+
+  [ Luca Boccassi ]
+  * d/t/control: pull libfdisk-dev for test suites. It will be a dlopen
+    library soon
+  * d/t/control: pull libmicrohttpd-dev for unit-tests suite. It will be a
+    dlopen library soon
+  * autopkgtest: add dependency on procps (Closes: #1136595)
+  * Conflict with sysuser-helper. Incompatible implementation specific for
+    runit, make the systemd package conflict with it to ensure it's never
+    installed in the default setup
+  * Downgrade dependency on dbus to recommends in sd-container. This
+    package is useful in the initrd, and dbus is no longer a hard
+    requirement for nspawn
+  * Update upstream source from tag 'upstream/261_rc1' Update to upstream
+    version '261~rc1' with Debian dir
+    dab9908c937b5e70158151b2bbec44d40817023e
+  * Bump Standards-version to 4.7.4, no changes
+  * Install new files for upstream release
+  * Backport patch to fix unit test in gitlab CI
+  * Update symbols file for new version
+  * Backport patch to skip test-pressure in autopkgtest
+  * Force linking against libm. Programs linking against libsystemd0.so
+    crash due to libm ifunc shenanigans when the linking was removed, so
+    force it back. This makes every binary link against libm rather than
+    just libsystemd.so.
+
+  [ Nick Rosbrook ]
+  * d/t/boot-and-services: use coreutils tunable in apparmor test (LP:
+    #2125614)
+
+  [ Alexandre Detiste ]
+  * use dh-cruft to register & purge volatile files
+
+ -- Luca Boccassi <bluca@debian.org>  Sat, 23 May 2026 12:02:22 +0100
+
 systemd (260.1-1) unstable; urgency=medium
 
   * Add lpadmin group to basic.conf sysusers.d as requested by CUPS
