@@ -480,7 +480,7 @@ usr/lib/tmpfiles.d/credstore.conf
 usr/lib/tmpfiles.d/home.conf
 usr/lib/tmpfiles.d/journal-nocow.conf
 usr/lib/tmpfiles.d/provision.conf
-usr/lib/tmpfiles.d/root.conf
+<pkg.systemd.upstream> usr/lib/tmpfiles.d/root.conf
 usr/lib/tmpfiles.d/systemd.conf
 usr/lib/tmpfiles.d/systemd-network.conf
 usr/lib/tmpfiles.d/systemd-nologin.conf
