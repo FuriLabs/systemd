@@ -1,3 +1,14 @@
+systemd (261~rc2-1) unstable; urgency=medium
+
+  * Clean up autovt@ alias on purge. (Closes: #1137522)
+  * Workaround piuparts issue with / permissions. (Closes: #1137429)
+  * Update upstream source from tag 'upstream/261_rc2' Update to upstream
+    version '261~rc2' with Debian dir
+    5514a46d042723c403871455547bb889f465f396
+  * Drop patches, all merged upstream
+
+ -- Luca Boccassi <bluca@debian.org>  Tue, 26 May 2026 22:10:39 +0100
+
 systemd (261~rc1-1) unstable; urgency=medium
 
   [ Luca Boccassi ]
