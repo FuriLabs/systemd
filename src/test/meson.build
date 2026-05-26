@@ -493,6 +493,11 @@ executables += [
         test_template + {
                 'sources' : files('test-varlink-idl-machine.c'),
                 'objects' : ['systemd-machined'],
+                'conditions' : ['ENABLE_MACHINED'],
+        },
+        test_template + {
+                'sources' : files('test-varlink-idl-login.c'),
+                'objects' : ['systemd-logind'],
         },
         test_template + {
                 'sources' : files('test-watchdog.c'),
