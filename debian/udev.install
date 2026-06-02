@@ -5,7 +5,7 @@ usr/bin/udevadm
 usr/lib/systemd/network/99-default.link
 usr/lib/systemd/systemd-modules-load
 usr/lib/systemd/systemd-udevd
-usr/lib/systemd/system/sockets.target.wants/systemd-udevd-control.socket
+<!pkg.systemd.upstream> usr/lib/systemd/system/sockets.target.wants/systemd-udevd-control.socket
 usr/lib/systemd/system/sockets.target.wants/systemd-udevd-kernel.socket
 usr/lib/systemd/system/sockets.target.wants/systemd-udevd-varlink.socket
 usr/lib/systemd/system/sysinit.target.wants/systemd-hwdb-update.service
