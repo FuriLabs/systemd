@@ -108,6 +108,7 @@ Pre-Depends: ${shlibs:Pre-Depends},
              ${misc:Pre-Depends}
 Depends: ${shlibs:Depends},
          ${misc:Depends},
+         ${dlopen:Depends},
          libsystemd0 (= ${binary:Version}),
          mount,
 Conflicts: consolekit,
@@ -167,6 +168,7 @@ Architecture: linux-any
 Multi-Arch: foreign
 Depends: ${shlibs:Depends},
          ${misc:Depends},
+         ${dlopen:Depends},
          libarchive13t64 | libarchive13,
          systemd,
 Recommends: libnss-mymachines,
@@ -187,6 +189,7 @@ Architecture: linux-any
 Multi-Arch: foreign
 Depends: ${shlibs:Depends},
          ${misc:Depends},
+         ${dlopen:Depends},
          systemd,
 Recommends: ${dlopen:Recommends},
 Suggests: ${dlopen:Suggests},
@@ -202,6 +205,7 @@ Architecture: linux-any
 Multi-Arch: foreign
 Depends: ${shlibs:Depends},
          ${misc:Depends},
+         ${dlopen:Depends},
          systemd
 Recommends: ${dlopen:Recommends},
 Suggests: ${dlopen:Suggests},
@@ -219,6 +223,7 @@ Multi-Arch: foreign
 Priority: standard
 Depends: ${shlibs:Depends},
          ${misc:Depends},
+         ${dlopen:Depends},
          systemd
 Recommends: ${dlopen:Recommends},
 Suggests: ${dlopen:Suggests},
@@ -234,6 +239,7 @@ Package: systemd-tests
 Architecture: linux-any
 Depends: ${shlibs:Depends},
          ${misc:Depends},
+         ${dlopen:Depends},
          systemd (= ${binary:Version}),
          python3,
          python3-psutil,
@@ -251,6 +257,7 @@ Priority: standard
 Pre-Depends: ${misc:Pre-Depends}
 Depends: ${shlibs:Depends},
          ${misc:Depends},
+         ${dlopen:Depends},
          systemd (= ${binary:Version}),
          libpam-runtime,
          default-dbus-system-bus | dbus-system-bus,
@@ -274,6 +281,7 @@ Multi-Arch: same
 Pre-Depends: ${misc:Pre-Depends}
 Depends: ${shlibs:Depends},
          ${misc:Depends},
+         ${dlopen:Depends},
 Recommends: ${dlopen:Recommends},
 Suggests: ${dlopen:Suggests},
 Description: nss module providing fallback resolution for the current hostname
@@ -295,6 +303,7 @@ Multi-Arch: same
 Pre-Depends: ${misc:Pre-Depends}
 Depends: ${shlibs:Depends},
          ${misc:Depends},
+         ${dlopen:Depends},
 Recommends: ${dlopen:Recommends},
             systemd-container,
 Suggests: ${dlopen:Suggests},
@@ -312,6 +321,7 @@ Multi-Arch: same
 Pre-Depends: ${misc:Pre-Depends}
 Depends: ${shlibs:Depends},
          ${misc:Depends},
+         ${dlopen:Depends},
 Recommends: ${dlopen:Recommends},
             systemd-resolved,
 Suggests: ${dlopen:Suggests},
@@ -329,6 +339,7 @@ Priority: standard
 Pre-Depends: ${misc:Pre-Depends}
 Depends: ${shlibs:Depends},
          ${misc:Depends},
+         ${dlopen:Depends},
 Recommends: ${dlopen:Recommends},
             systemd-userdbd,
 Suggests: ${dlopen:Suggests},
@@ -346,7 +357,8 @@ Architecture: linux-any
 Multi-Arch: same
 Section: libs
 Depends: ${shlibs:Depends},
-         ${misc:Depends}
+         ${misc:Depends},
+         ${dlopen:Depends},
 Recommends: ${dlopen:Recommends},
 Suggests: ${dlopen:Suggests},
 Description: systemd utility library
@@ -358,6 +370,7 @@ Architecture: linux-any
 Multi-Arch: same
 Section: libdevel
 Depends: ${misc:Depends},
+         ${dlopen:Depends},
          libsystemd0 (= ${binary:Version})
 Description: systemd utility library - development files
  This library provides APIs to interface with various system components such as
@@ -372,7 +385,8 @@ Multi-Arch: same
 Section: libs
 Pre-Depends: ${misc:Pre-Depends}
 Depends: ${shlibs:Depends},
-         ${misc:Depends}
+         ${misc:Depends},
+         ${dlopen:Depends},
 Recommends: ${dlopen:Recommends},
 Suggests: ${dlopen:Suggests},
 Description: systemd shared private library
@@ -387,6 +401,7 @@ Multi-Arch: foreign
 Pre-Depends: ${misc:Pre-Depends}
 Depends: ${shlibs:Depends},
          ${misc:Depends},
+         ${dlopen:Depends},
          libkmod2,
          libudev1 (= ${binary:Version}),
          s390-tools [s390],
@@ -406,7 +421,8 @@ Architecture: linux-any
 Multi-Arch: same
 Pre-Depends: ${misc:Pre-Depends}
 Depends: ${shlibs:Depends},
-         ${misc:Depends}
+         ${misc:Depends},
+         ${dlopen:Depends},
 Recommends: ${dlopen:Recommends},
 Suggests: ${dlopen:Suggests},
 Description: libudev shared library
@@ -434,6 +450,7 @@ Replaces: systemd-sysusers,
 Provides: systemd-sysusers (= ${binary:Version})
 Depends: ${shlibs:Depends},
          ${misc:Depends},
+         ${dlopen:Depends},
 Recommends: ${dlopen:Recommends},
 Suggests: ${dlopen:Suggests},
 Description: standalone sysusers binary for use in non-systemd systems
@@ -448,6 +465,7 @@ Replaces: systemd-tmpfiles,
 Provides: systemd-tmpfiles (= ${binary:Version})
 Depends: ${shlibs:Depends},
          ${misc:Depends},
+         ${dlopen:Depends},
 Recommends: ${dlopen:Recommends},
 Suggests: ${dlopen:Suggests},
 Description: standalone tmpfiles binary for use in non-systemd systems
@@ -460,6 +478,7 @@ Architecture: linux-any
 Conflicts: systemd,
 Depends: ${shlibs:Depends},
          ${misc:Depends},
+         ${dlopen:Depends},
 Recommends: ${dlopen:Recommends},
 Suggests: ${dlopen:Suggests},
 Description: standalone shutdown binary for use in exitrds
@@ -471,6 +490,7 @@ Package: systemd-oomd
 Architecture: linux-any
 Depends: ${shlibs:Depends},
          ${misc:Depends},
+         ${dlopen:Depends},
 Recommends: ${dlopen:Recommends},
 Suggests: ${dlopen:Suggests},
 Breaks: systemd (<< 250.2-2~)
@@ -486,6 +506,7 @@ Architecture: linux-any
 Multi-Arch: foreign
 Depends: ${shlibs:Depends},
          ${misc:Depends},
+         ${dlopen:Depends},
          libnss-systemd (= ${binary:Version}),
          systemd (= ${binary:Version}),
 Recommends: ${dlopen:Recommends},
@@ -502,6 +523,7 @@ Build-Profiles: <!stage1>
 Architecture: linux-any
 Depends: ${shlibs:Depends},
          ${misc:Depends},
+         ${dlopen:Depends},
          systemd-userdbd (= ${binary:Version}),
          systemd (= ${binary:Version}),
          libpam-runtime,
@@ -518,6 +540,7 @@ Build-Profiles: <!stage1>
 Architecture: amd64 i386 arm64 armhf loong64 riscv64
 Depends: ${shlibs:Depends},
          ${misc:Depends},
+         ${dlopen:Depends},
          efibootmgr [amd64 arm64],
          systemd (= ${binary:Version}),
          systemd-boot-tools (= ${binary:Version}),
@@ -544,6 +567,7 @@ Build-Profiles: <!stage1>
 Architecture: linux-any
 Depends: ${shlibs:Depends},
          ${misc:Depends},
+         ${dlopen:Depends},
 Recommends: ${dlopen:Recommends},
 Suggests: ${dlopen:Suggests},
 Breaks: systemd-boot (<< 257.4-2~),
@@ -615,6 +639,7 @@ Architecture: linux-any
 Pre-Depends: ${misc:Pre-Depends}
 Depends: ${shlibs:Depends},
          ${misc:Depends},
+         ${dlopen:Depends},
          systemd (= ${binary:Version}),
          default-dbus-system-bus | dbus-system-bus
 Recommends: libnss-myhostname,
@@ -656,6 +681,7 @@ Package: systemd-repart
 Architecture: linux-any
 Depends: ${shlibs:Depends},
          ${misc:Depends},
+         ${dlopen:Depends},
 Recommends: ${dlopen:Recommends},
 Suggests: ${dlopen:Suggests},
 Conflicts: systemd (<< 256-2~),
@@ -673,6 +699,7 @@ Build-Profiles: <!stage1>
 Architecture: linux-any
 Depends: ${shlibs:Depends},
          ${misc:Depends},
+         ${dlopen:Depends},
 Recommends: ${dlopen:Recommends},
 Suggests: ${dlopen:Suggests},
 Conflicts: systemd (<< 256-2~),
