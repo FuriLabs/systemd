@@ -4449,6 +4449,13 @@ static int outer_child(
         if (notify_fd < 0)
                 return notify_fd;
 
+        /* Join the external network namespace first, while we are still in the parent's
+         * user namespace and have CAP_SYS_ADMIN there. Once we clone with CLONE_NEWUSER,
+         * the child will be in a new user namespace, lacking the capabilities in the
+         * parent user namespace required to join its network namespace. */
+        if (arg_network_namespace_path && setns(netns_fd, CLONE_NEWNET) < 0)
+                return log_error_errno(errno, "Failed to join network namespace: %m");
+
         pid_t pid = raw_clone(SIGCHLD|CLONE_NEWNS|
                         arg_clone_ns_flags |
                         (IN_SET(arg_userns_mode, USER_NAMESPACE_FIXED, USER_NAMESPACE_PICK) ? CLONE_NEWUSER : 0) |
@@ -4463,9 +4470,6 @@ static int outer_child(
 
                 /* The inner child has all namespaces that are requested, so that we all are owned by the
                  * user if user namespaces are turned on. */
-
-                if (arg_network_namespace_path && setns(netns_fd, CLONE_NEWNET) < 0)
-                        return log_error_errno(errno, "Failed to join network namespace: %m");
 
                 if (arg_userns_mode == USER_NAMESPACE_MANAGED) {
                         /* In managed usernamespace operation, sysfs + procfs are special, we'll have to
@@ -6142,9 +6146,9 @@ static int run(int argc, char *argv[]) {
         if (arg_cleanup)
                 return do_cleanup();
 
-        (void) dlopen_libmount(LOG_DEBUG);
-        (void) dlopen_libseccomp(LOG_DEBUG);
-        (void) dlopen_libselinux(LOG_DEBUG);
+        (void) DLOPEN_LIBMOUNT(LOG_DEBUG, SD_ELF_NOTE_DLOPEN_PRIORITY_RECOMMENDED);
+        (void) DLOPEN_LIBSECCOMP(LOG_DEBUG, SD_ELF_NOTE_DLOPEN_PRIORITY_RECOMMENDED);
+        (void) DLOPEN_LIBSELINUX(LOG_DEBUG, SD_ELF_NOTE_DLOPEN_PRIORITY_RECOMMENDED);
 
         r = cg_has_legacy();
         if (r < 0)
