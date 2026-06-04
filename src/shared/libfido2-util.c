@@ -13,6 +13,7 @@
 #include "format-table.h"
 #include "glyph-util.h"
 #include "iovec-util.h"
+#include "locale-util.h"
 #include "plymouth-util.h"
 #include "string-util.h"
 #include "strv.h"
@@ -493,7 +494,7 @@ static int fido2_use_hmac_hash_specific_token(
                         log_notice("%s%sPlease confirm presence on security token to unlock.",
                                    emoji_enabled() ? glyph(GLYPH_TOUCH) : "",
                                    emoji_enabled() ? " " : "");
-                        plymouth_start_interaction("Please confirm presence on security token to unlock.", &plymouth_displayed);
+                        plymouth_start_interaction(_("Please confirm presence on security token to unlock."), &plymouth_displayed);
                 }
         }
 
@@ -509,7 +510,7 @@ static int fido2_use_hmac_hash_specific_token(
                         log_notice("%s%sPlease verify user on security token to unlock.",
                                    emoji_enabled() ? glyph(GLYPH_TOUCH) : "",
                                    emoji_enabled() ? " " : "");
-                        plymouth_start_interaction("Please verify user on security token to unlock.", &plymouth_displayed);
+                        plymouth_start_interaction(_("Please verify user on security token to unlock."), &plymouth_displayed);
                 }
         }
 
@@ -550,7 +551,7 @@ static int fido2_use_hmac_hash_specific_token(
                                 log_notice("%s%sPlease confirm presence on security to unlock.",
                                            emoji_enabled() ? glyph(GLYPH_TOUCH) : "",
                                            emoji_enabled() ? " " : "");
-                                plymouth_start_interaction("Please confirm presence on security token to unlock.", &plymouth_displayed);
+                                plymouth_start_interaction(_("Please confirm presence on security token to unlock."), &plymouth_displayed);
                                 retry_with_up = true;
                         }
 
@@ -922,7 +923,7 @@ int fido2_generate_hmac_hash(
                         _cleanup_strv_free_erase_ char **pin = NULL;
                         AskPasswordRequest req = {
                                 .tty_fd = -EBADF,
-                                .message = "Please enter security token PIN:",
+                                .message = _("Please enter security token PIN:"),
                                 .icon = askpw_icon,
                                 .keyring = "fido2-pin",
                                 .credential = askpw_credential,
@@ -1153,12 +1154,6 @@ static int check_device_is_fido2_with_hmac_secret(
         _cleanup_(fido_dev_free_wrapper) fido_dev_t *d = NULL;
         int r;
 
-        assert(ret_has_rk);
-        assert(ret_has_client_pin);
-        assert(ret_has_up);
-        assert(ret_has_uv);
-        assert(ret_has_always_uv);
-
         d = sym_fido_dev_new();
         if (!d)
                 return log_oom();
@@ -1170,7 +1165,16 @@ static int check_device_is_fido2_with_hmac_secret(
 
         r = verify_features(d, path, LOG_DEBUG, ret_has_rk, ret_has_client_pin, ret_has_up, ret_has_uv, ret_has_always_uv);
         if (r == -ENODEV) { /* Not a FIDO2 device, or not implementing 'hmac-secret' */
-                *ret_has_rk = *ret_has_client_pin = *ret_has_up = *ret_has_uv = *ret_has_always_uv = false;
+                if (ret_has_rk)
+                        *ret_has_rk = false;
+                if (ret_has_client_pin)
+                        *ret_has_client_pin = false;
+                if (ret_has_up)
+                        *ret_has_up = false;
+                if (ret_has_uv)
+                        *ret_has_uv = false;
+                if (ret_has_always_uv)
+                        *ret_has_always_uv = false;
                 return false;
         }
         if (r < 0)
