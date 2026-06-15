@@ -48,9 +48,6 @@ if [ "$1" = "triggered" ]; then
             /usr/lib/sysctl.d)
                 _update_sysctl
                 ;;
-            libc-upgrade)
-                _restart_managers
-                ;;
         esac
     done
     exit 0
@@ -74,11 +71,6 @@ systemd-machine-id-setup ${DPKG_ROOT:+--root="$DPKG_ROOT"}
 # Enable persistent journal, in auto-mode, by default on new installs
 if [ -z "$2" ]; then
     mkdir -p "$DPKG_ROOT/var/log/journal"
-fi
-
-# skip daemon-reexec and try-restarts during shutdown to avoid hitting LP: #1803391
-if [ -n "$2" ] && [ "$(systemctl is-system-running)" != "stopping" ]; then
-    _restart_managers
 fi
 
 # Initial update of the Message Catalogs database
