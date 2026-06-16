@@ -1,6 +1,12 @@
-#!/bin/sh
+#!/bin/bash
 
 set -e
+
+cleanup() {
+    exit 0
+}
+
+trap cleanup ERR
 
 if [ "$1" = configure ]; then
     # enable systemd-coredump right after package installation

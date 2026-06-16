@@ -1,6 +1,12 @@
-#!/bin/sh
+#!/bin/bash
 
 set -e
+
+cleanup() {
+    exit 0
+}
+
+trap cleanup ERR
 
 update_hwdb() {
     systemd-hwdb --usr update || true
