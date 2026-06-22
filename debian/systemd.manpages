@@ -31,7 +31,6 @@ debian/tmp/usr/share/man/man1/systemd-mute-console@.service.1
 debian/tmp/usr/share/man/man1/systemd-notify.1
 debian/tmp/usr/share/man/man1/systemd-path.1
 debian/tmp/usr/share/man/man1/systemd-pty-forward.1
-debian/tmp/usr/share/man/man1/systemd-report.1
 debian/tmp/usr/share/man/man1/systemd-run.1
 debian/tmp/usr/share/man/man1/systemd-socket-activate.1
 debian/tmp/usr/share/man/man1/systemd-ssh-issue.1
@@ -236,15 +235,6 @@ debian/tmp/usr/share/man/man8/systemd-random-seed.service.8
 debian/tmp/usr/share/man/man8/systemd-reboot.service.8
 debian/tmp/usr/share/man/man8/systemd-remount-fs.8
 debian/tmp/usr/share/man/man8/systemd-remount-fs.service.8
-<pkg.systemd.upstream> debian/tmp/usr/share/man/man8/systemd-report-files.8
-<pkg.systemd.upstream> debian/tmp/usr/share/man/man8/systemd-report-files.socket.8
-<pkg.systemd.upstream> debian/tmp/usr/share/man/man8/systemd-report-files@.service.8
-<pkg.systemd.upstream> debian/tmp/usr/share/man/man8/systemd-report-sign-plain.8
-<pkg.systemd.upstream> debian/tmp/usr/share/man/man8/systemd-report-sign-plain.socket.8
-<pkg.systemd.upstream> debian/tmp/usr/share/man/man8/systemd-report-sign-plain@.service.8
-<pkg.systemd.upstream> debian/tmp/usr/share/man/man8/systemd-report-sign-tsm.8
-<pkg.systemd.upstream> debian/tmp/usr/share/man/man8/systemd-report-sign-tsm.socket.8
-<pkg.systemd.upstream> debian/tmp/usr/share/man/man8/systemd-report-sign-tsm@.service.8
 debian/tmp/usr/share/man/man8/systemd-rfkill.8
 debian/tmp/usr/share/man/man8/systemd-rfkill.service.8
 debian/tmp/usr/share/man/man8/systemd-rfkill.socket.8
