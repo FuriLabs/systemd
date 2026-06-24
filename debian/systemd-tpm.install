@@ -46,6 +46,8 @@ usr/lib/systemd/systemd-pcrlock
 [amd64 i386 arm64 armhf riscv64 loong64] usr/lib/systemd/system/systemd-pcrnvdone.service
 [amd64 i386 arm64 armhf riscv64 loong64] usr/lib/systemd/system/systemd-pcrosseparator.service
 [amd64 i386 arm64 armhf riscv64 loong64] usr/lib/systemd/system/systemd-pcrproduct.service
+[amd64 i386 arm64 armhf riscv64 loong64] <pkg.systemd.upstream> usr/lib/systemd/system/systemd-sysupdate-notify-pcrlock.socket
+[amd64 i386 arm64 armhf riscv64 loong64] <pkg.systemd.upstream> usr/lib/systemd/system/systemd-sysupdate-notify-pcrlock@.service
 [amd64 i386 arm64 armhf riscv64 loong64] usr/lib/systemd/system/systemd-tpm2-clear.service
 [amd64 i386 arm64 armhf riscv64 loong64] usr/lib/systemd/system/systemd-tpm2-setup-early.service
 [amd64 i386 arm64 armhf riscv64 loong64] usr/lib/systemd/system/systemd-tpm2-setup.service
