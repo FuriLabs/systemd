@@ -643,10 +643,10 @@ Depends: ${shlibs:Depends},
          ${dlopen:Depends},
          systemd (= ${binary:Version}),
          default-dbus-system-bus | dbus-system-bus
-Recommends: libnss-myhostname,
-            libnss-resolve,
-            ${dlopen:Recommends},
+Recommends: ${dlopen:Recommends},
 Suggests: polkitd,
+          libnss-myhostname,
+          libnss-resolve,
           ${dlopen:Suggests},
 Provides: resolvconf
 Conflicts: resolvconf,
