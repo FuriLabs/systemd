@@ -1,3 +1,19 @@
+systemd (261-2) unstable; urgency=medium
+
+  * d/t/control: do not install xserver-xorg-video-dummy on loong64
+  * Split imds tools into new systemd-imds package. These depend on curl
+    and provide advanced functionality, so split into a new package to
+    make the main package lighter
+  * Split metrics reporting tools into new systemd-report package. These
+    depend on curl and provide advanced functionality, so split into a new
+    package to make the main package lighter
+  * Split tpm tools into new systemd-tpm package. These depend on
+    libcrypto and tpm2-tss libraries and provide advanced functionality,
+    so splilt into a new package to make the main package lighter
+  * Note new package split in NEWS
+
+ -- Luca Boccassi <bluca@debian.org>  Wed, 24 Jun 2026 22:15:24 +0100
+
 systemd (261-1) unstable; urgency=medium
 
   [ Nick Rosbrook ]
