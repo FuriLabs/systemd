@@ -114,7 +114,8 @@ Copyright: 2013-2014 Dave Reisner <dreisner@archlinux.org>
            2026 Yu Watanabe <watanabe.yu+github@gmail.com>
 License: Unlicense
 
-Files: src/udev/ata_id/ata_id.c
+Files: debian/extra/tmpfiles.d/debian.conf
+       src/udev/ata_id/ata_id.c
        src/udev/cdrom_id/cdrom_id.c
        src/udev/dmi_memory_id/dmi_memory_id.c
        src/udev/mtd_probe/mtd_probe.c
