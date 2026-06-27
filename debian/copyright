@@ -114,8 +114,7 @@ Copyright: 2013-2014 Dave Reisner <dreisner@archlinux.org>
            2026 Yu Watanabe <watanabe.yu+github@gmail.com>
 License: Unlicense
 
-Files: debian/extra/tmpfiles.d/debian.conf
-       src/udev/ata_id/ata_id.c
+Files: src/udev/ata_id/ata_id.c
        src/udev/cdrom_id/cdrom_id.c
        src/udev/dmi_memory_id/dmi_memory_id.c
        src/udev/mtd_probe/mtd_probe.c
@@ -229,6 +228,12 @@ Copyright: 2010-2013 Tollef Fog Heen <tfheen@debian.org>
            2021 Matthias Klumpp <matthias@tenstral.net>
            2021 Salvatore Bonaccorso <carnil@debian.org>
 License: LGPL-2.1+
+
+Files: debian/extra/tmpfiles.d/debian.conf
+Copyright: 2015 Martin Pitt <martin.pitt@ubuntu.com>
+           2018 Michael Biebl <biebl@debian.org>
+           2023-2025 Luca Boccassi <luca.boccassi@gmail.com>
+License: GPL-2+
 
 License: Expat
  Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -364,6 +369,23 @@ License: GPL-2+
  .
  On Debian systems, the complete text of the GNU General Public License
  version 2 can be found in ‘/usr/share/common-licenses/GPL-2’.
+
+License: LGPL-2.0+
+ This package is free software; you can redistribute it and/or
+ modify it under the terms of the GNU Lesser General Public
+ License as published by the Free Software Foundation; either
+ version 2 of the License, or (at your option) any later version.
+ .
+ This package is distributed in the hope that it will be useful,
+ but WITHOUT ANY WARRANTY; without even the implied warranty of
+ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ Lesser General Public License for more details.
+ .
+ You should have received a copy of the GNU General Public License
+ along with this program. If not, see <http://www.gnu.org/licenses/>.
+ .
+ On Debian systems, the complete text of the GNU Lesser General
+ Public License can be found in "/usr/share/common-licenses/LGPL-2".
 
 License: LGPL-2.1+
  This program is free software; you can redistribute it and/or modify
