@@ -33,4 +33,4 @@ usr/lib/systemd/system/system-systemd\x2dveritysetup.slice
 usr/lib/*/cryptsetup/
 usr/share/bash-completion/completions/systemd-cryptenroll
 <pkg.systemd.upstream> usr/share/polkit-1/actions/io.systemd.cryptenroll.policy
-<pkg.systemd.upstream> usr/share/zsh/vendor-functions/_systemd-cryptenroll
+<pkg.systemd.upstream> usr/share/zsh/vendor-completions/_systemd-cryptenroll
