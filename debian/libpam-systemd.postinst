@@ -7,6 +7,6 @@ set -e
 # directory by passing the --root parameter.
 # Passing the root parameter is no longer needed if pam-auth-update
 # switches to $DPKG_ROOT as the default for --root. See #1137186.
-pam-auth-update ${DPKG_ROOT:+--root="$DPKG_ROOT"} --package
+pam-auth-update ${DPKG_ROOT:+--root "$DPKG_ROOT"} --package
 
 #DEBHELPER#
