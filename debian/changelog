@@ -1,3 +1,19 @@
+systemd (261.1-3) UNRELEASED; urgency=medium
+
+  [ Luca Boccassi ]
+  * Move modules-load from systemd package to udev package. This depends
+    on libkmod to work, and it's something that is needed on a host, but
+    not in a container, just like udev (on both counts).
+
+  [ Nick Rosbrook ]
+  * d/t/upstream: use mkosi from archive for Ubuntu autopkgtest
+
+  [ Johannes Schauer Marin Rodrigues ]
+  * debian/libpam-systemd.postinst: run pam-auth-update with
+    --root=$DPKG_ROOT.
+
+ -- Luca Boccassi <bluca@debian.org>  Fri, 10 Jul 2026 12:43:11 +0100
+
 systemd (261.1-2) unstable; urgency=medium
 
   * Make systemd actually temporarily depend on systemd-tpm. This was
