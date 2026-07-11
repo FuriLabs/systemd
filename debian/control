@@ -741,6 +741,7 @@ Architecture: linux-any
 Depends: ${shlibs:Depends},
          ${misc:Depends},
          ${dlopen:Depends},
+         tpm-udev,
 Recommends: ${dlopen:Recommends},
 Suggests: ${dlopen:Suggests},
 Breaks: systemd (<< 261-2~),
