@@ -409,7 +409,6 @@ Depends: ${shlibs:Depends},
          s390-tools [s390],
 Recommends: ${dlopen:Recommends},
 Suggests: ${dlopen:Suggests},
-# DEP17 M7: moving files between / and /usr, and between packages, so use Conflicts:
 Conflicts: systemd (<< 261.1-3~),
 Replaces: systemd (<< 261.1-3~),
 Breaks: systemd (<< ${binary:Version}),
