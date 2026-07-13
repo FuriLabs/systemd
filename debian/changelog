@@ -1,9 +1,15 @@
-systemd (261.1-3) UNRELEASED; urgency=medium
+systemd (261.1-3) unstable; urgency=medium
 
   [ Luca Boccassi ]
   * Move modules-load from systemd package to udev package. This depends
     on libkmod to work, and it's something that is needed on a host, but
     not in a container, just like udev (on both counts).
+  * systemd-tpm: depend on tpm-udev for rules and tmpfiles.d
+  * systemd: downgrade systemd-tpm and mount to recommends. With these
+    changes the only dependencies in the systemd packages are libmount1,
+    libblkd1 and glibc, which are all in the essential set anyway. This
+    makes the systemd package suitable for minimal and contained images
+    too.
 
   [ Nick Rosbrook ]
   * d/t/upstream: use mkosi from archive for Ubuntu autopkgtest
@@ -12,7 +18,10 @@ systemd (261.1-3) UNRELEASED; urgency=medium
   * debian/libpam-systemd.postinst: run pam-auth-update with
     --root=$DPKG_ROOT.
 
- -- Luca Boccassi <bluca@debian.org>  Fri, 10 Jul 2026 12:43:11 +0100
+  [ Roy Briggs ]
+  * debian/extra/network: use NamePolicy=keep mac on USB wifi devices.
+
+ -- Luca Boccassi <bluca@debian.org>  Mon, 13 Jul 2026 12:38:07 +0100
 
 systemd (261.1-2) unstable; urgency=medium
 
