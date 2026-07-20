@@ -716,9 +716,11 @@ Recommends: ${dlopen:Recommends},
 Suggests: ${dlopen:Suggests},
 Breaks: systemd (<< 261-2~),
 Replaces: systemd (<< 261-2~),
-Description: Provides imds utilities and units
- Utilities and units that provide imds functionality and support in systemd,
- including boot services and generators.
+Description: Provides IMDS utilities and units
+ Utilities and units that provide IMDS (Instance Metadata Service)
+ functionality and support in systemd, including boot services and
+ generators. Cloud providers offer information about virtual machines
+ by IMDS.
 
 Package: systemd-report
 Build-Profiles: <!stage1>
