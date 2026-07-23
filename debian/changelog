@@ -1,3 +1,21 @@
+systemd (261.2-1) UNRELEASED; urgency=medium
+
+  [ Luca Boccassi ]
+  * Update upstream source from tag 'upstream/261.2' Update to upstream
+    version '261.2' with Debian dir
+    b19b2fcdbda652d584359be6707c14432386680c
+
+  [ Daniel Lewart ]
+  * Make systemd-networkd example consistent with systemd.network(5)
+
+  [ Nick Rosbrook ]
+  * d/systemd.links: drop procps.service alias (LP: #2153900)
+  * d/control: clarify systemd-imds Description. Thanks to Andreas Metzler
+    for the suggestion. (Closes: #1142173)
+  * d/libnss-systemd.nss: install after files and compat in nsswitch.conf
+
+ -- Luca Boccassi <bluca@debian.org>  Thu, 23 Jul 2026 18:14:51 +0100
+
 systemd (261.1-3) unstable; urgency=medium
 
   [ Luca Boccassi ]
