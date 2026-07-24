@@ -37,8 +37,7 @@ Copyright: 1999 Tom Tromey
            2000 Red Hat, Inc.
 License: LGPL-2.0+
 
-Files: mkosi/mkosi.finalize
-       src/basic/siphash24.h
+Files: src/basic/siphash24.h
        src/basic/siphash24.c
 Copyright: 2025 Daan De Meyer <daan.j.demeyer@gmail.com>
            2012 Jean-Philippe Aumasson <jeanphilippe.aumasson@gmail.com>
