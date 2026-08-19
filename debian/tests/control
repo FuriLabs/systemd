@@ -50,6 +50,7 @@ Depends: systemd,
   systemd-sysv,
   polkitd,
   netlabel-tools,
+  iproute2,
   dnsmasq-base
 Restrictions: needs-root, isolation-container, breaks-testbed, skippable
 
@@ -113,6 +114,7 @@ Depends: systemd-sysv,
   dhcpcd-base | dhcpcd5,
   procps,
   mount,
+  apparmor,
 Restrictions: needs-root, isolation-container, allow-stderr
 
 Tests: unit-tests
