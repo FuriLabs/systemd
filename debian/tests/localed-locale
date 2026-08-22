@@ -3,6 +3,12 @@ set -e
 
 . `dirname $0`/assert.sh
 
+. /etc/os-release
+if [ "$ID" = "debian" ]; then
+    echo "systemd-localed is not supported in Debian, skipping test"
+    exit 77
+fi
+
 cleanup() {
     rm -f /etc/dbus-1/system.d/systemd-localed-read-only.conf
 
