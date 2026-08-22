@@ -3,6 +3,26 @@ set -e
 
 . `dirname $0`/assert.sh
 
+cleanup() {
+    rm -f /etc/dbus-1/system.d/systemd-localed-read-only.conf
+
+    if [ -f /etc/locale.conf.orig ]; then
+        mv /etc/locale.conf.orig /etc/locale.conf
+    else
+        rm -f /etc/locale.conf
+    fi
+    if [ -f /etc/vconsole.conf.orig ]; then
+        mv /etc/vconsole.conf.orig /etc/vconsole.conf
+    else
+        rm -f /etc/vconsole.conf
+    fi
+    if [ -f /etc/locale.gen.orig ]; then
+        mv /etc/locale.gen.orig /etc/locale.gen
+        locale-gen
+    fi
+}
+trap cleanup EXIT
+
 # Calls to localed are blocked as other tools are used to change settings,
 # override that policy
 mkdir -p /etc/dbus-1/system.d/
@@ -18,7 +38,6 @@ cat >/etc/dbus-1/system.d/systemd-localed-read-only.conf <<EOF
         </policy>
 </busconfig>
 EOF
-trap 'rm -f /etc/dbus-1/system.d/systemd-localed-read-only.conf' EXIT
 systemctl reload dbus.service || true
 
 if [ -f /etc/locale.conf ]; then
@@ -61,17 +80,3 @@ LC_CTYPE=en_US.UTF-8"
 
 # ensure tested locale exists and works now
 assert_rc 0 validlocale de_DE.UTF-8 2>&1
-
-# reset locale to original
-if [ -f /etc/locale.conf.orig ]; then
-    mv /etc/locale.conf.orig /etc/locale.conf
-else
-    rm -f /etc/locale.conf
-fi
-if [ -f /etc/vconsole.conf.orig ]; then
-    mv /etc/vconsole.conf.orig /etc/vconsole.conf
-else
-    rm /etc/vconsole.conf
-fi
-mv /etc/locale.gen.orig /etc/locale.gen
-locale-gen
