@@ -51,7 +51,7 @@ usr/lib/udev/rules.d/60-persistent-storage-tape.rules
 usr/lib/udev/rules.d/60-persistent-v4l.rules
 usr/lib/udev/rules.d/60-sensor.rules
 usr/lib/udev/rules.d/60-serial.rules
-[amd64 i386 arm64 armhf riscv64 loong64] <!stage1> usr/lib/udev/rules.d/60-tpm2-id.rules
+<!stage1> usr/lib/udev/rules.d/60-tpm2-id.rules
 usr/lib/udev/rules.d/64-btrfs.rules
 usr/lib/udev/rules.d/65-integration.rules
 usr/lib/udev/rules.d/70-camera.rules
