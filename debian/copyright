@@ -142,7 +142,6 @@ Files: src/udev/ata_id/ata_id.c
        src/udev/udev-builtin-path_id.c
        src/udev/udev-builtin-uaccess.c
        src/udev/udev-builtin-usb_id.c
-       src/udev/udev-ctrl.h
        src/udev/udevd.c
        src/udev/udevd.h
        src/udev/udev-event.c
