@@ -19,6 +19,7 @@
 #include "device-util.h"
 #include "discover-image.h"
 #include "dissect-image.h"
+#include "dlopen-note.h"
 #include "env-util.h"
 #include "errno-util.h"
 #include "escape.h"
@@ -41,7 +42,6 @@
 #include "mountpoint-util.h"
 #include "namespace-util.h"
 #include "nsresource.h"
-#include "options.h"
 #include "parse-argument.h"
 #include "parse-util.h"
 #include "path-util.h"
@@ -59,6 +59,7 @@
 #include "tmpfile-util.h"
 #include "uid-classification.h"
 #include "user-util.h"
+#include "verbs.h"
 #include "vpick.h"
 
 static enum {
@@ -120,63 +121,28 @@ STATIC_DESTRUCTOR_REGISTER(arg_loop_ref, freep);
 STATIC_DESTRUCTOR_REGISTER(arg_image_policy, image_policy_freep);
 STATIC_DESTRUCTOR_REGISTER(arg_image_filter, image_filter_freep);
 
-static int help(void) {
-        _cleanup_free_ char *link = NULL;
-        _cleanup_(table_unrefp) Table *options = NULL, *commands = NULL;
-        int r;
-
-        pager_open(arg_pager_flags);
-
-        r = terminal_urlify_man("systemd-dissect", "1", &link);
-        if (r < 0)
-                return log_oom();
-
-        r = option_parser_get_help_table_ns("systemd-dissect", &options);
-        if (r < 0)
-                return r;
-
-        r = option_parser_get_help_table_full("systemd-dissect", "Commands", &commands);
-        if (r < 0)
-                return r;
-
-        /* Make the 1st column same width in both tables */
-        (void) table_sync_column_widths(0, options, commands);
-
-        printf("%1$s [OPTIONS...] IMAGE\n"
-               "%1$s [OPTIONS...] --mount IMAGE PATH\n"
-               "%1$s [OPTIONS...] --umount PATH\n"
-               "%1$s [OPTIONS...] --attach IMAGE\n"
-               "%1$s [OPTIONS...] --detach PATH\n"
-               "%1$s [OPTIONS...] --list IMAGE\n"
-               "%1$s [OPTIONS...] --mtree IMAGE\n"
-               "%1$s [OPTIONS...] --with IMAGE [COMMAND…]\n"
-               "%1$s [OPTIONS...] --copy-from IMAGE PATH [TARGET]\n"
-               "%1$s [OPTIONS...] --copy-to IMAGE [SOURCE] PATH\n"
-               "%1$s [OPTIONS...] --make-archive IMAGE [TARGET]\n"
-               "%1$s [OPTIONS...] --discover\n"
-               "%1$s [OPTIONS...] --validate IMAGE\n"
-               "%1$s [OPTIONS...] --shift IMAGE UIDBASE\n"
-               "\n%2$sDissect a Discoverable Disk Image (DDI).%3$s\n"
-               "\n%4$sOptions:%5$s\n",
-               program_invocation_short_name,
-               ansi_highlight(),
-               ansi_normal(),
-               ansi_underline(),
-               ansi_normal());
-
-        r = table_print_or_warn(options);
-        if (r < 0)
-                return r;
-
-        printf("\n%sCommands:%s\n", ansi_underline(), ansi_normal());
-
-        r = table_print_or_warn(commands);
-        if (r < 0)
-                return r;
-
-        printf("\nSee the %s for details.\n", link);
-        return 0;
-}
+COMMAND(
+        "systemd-dissect\0",
+        "Dissect a Discoverable Disk Image (DDI).",
+        .argspec =
+               "IMAGE\0"
+               "--mount IMAGE PATH\0"
+               "--umount PATH\0"
+               "--attach IMAGE\0"
+               "--detach PATH\0"
+               "--list IMAGE\0"
+               "--mtree IMAGE\0"
+               "--with IMAGE [COMMAND…]\0"
+               "--copy-from IMAGE PATH [TARGET]\0"
+               "--copy-to IMAGE [SOURCE] PATH\0"
+               "--make-archive IMAGE [TARGET]\0"
+               "--discover\0"
+               "--validate IMAGE\0"
+               "--shift IMAGE UIDBASE\0",
+        .man_pages = "systemd-dissect(1)\0",
+        .option_namespace = "systemd-dissect",
+        .pager_flags = &arg_pager_flags,
+);
 
 static int parse_image_path_argument(const char *path, char **ret_root, char **ret_image) {
         _cleanup_free_ char *p = NULL;
@@ -438,7 +404,7 @@ static int parse_argv(int argc, char *argv[]) {
                 OPTION_GROUP("Commands"): {}
 
                 OPTION_COMMON_HELP:
-                        return help();
+                        return command_print_help();
 
                 OPTION_COMMON_VERSION:
                         return version();
@@ -493,7 +459,7 @@ static int parse_argv(int argc, char *argv[]) {
                         break;
 
                 OPTION_LONG("make-archive", NULL, "Convert the DDI to an archive file"):
-                        r = DLOPEN_LIBARCHIVE(LOG_ERR, SD_ELF_NOTE_DLOPEN_PRIORITY_RECOMMENDED);
+                        r = dlopen_libarchive(LOG_ERR);
                         if (r < 0)
                                 return r;
 
@@ -511,6 +477,9 @@ static int parse_argv(int argc, char *argv[]) {
                 OPTION_LONG("shift", NULL, "Shift UID range to selected base"):
                         arg_action = ACTION_SHIFT;
                         break;
+
+                OPTION_COMMON_INTROSPECT_CLI:
+                        return introspect_cli(arg_json_format_flags);
                 }
 
         if (system_scope_requested || user_scope_requested)
@@ -742,6 +711,13 @@ static int parse_argv(int argc, char *argv[]) {
 
         return 1;
 }
+
+COMMAND(
+        "mount.ddi\0",
+        "External helper for mount.8 to mount Discoverable Disk Images (DDIs).",
+        .man_pages = "systemd-dissect(1)\0",
+        .option_namespace = "mount.ddi",
+);
 
 static int parse_argv_as_mount_helper(int argc, char *argv[]) {
         const char *options = NULL;
@@ -1400,7 +1376,7 @@ static int action_list_or_mtree_or_copy_or_make_archive(DissectedImage *m, LoopD
 
                 /* Copying to stdout? */
                 if (streq(arg_target, "-")) {
-                        r = copy_bytes(source_fd, STDOUT_FILENO, UINT64_MAX, COPY_REFLINK);
+                        r = copy_bytes(source_fd, STDOUT_FILENO, UINT64_MAX, /* copy_flags= */ 0);
                         if (r < 0)
                                 return log_error_errno(r, "Failed to copy bytes from %s in mage '%s' to stdout: %m", arg_source, arg_image);
 
@@ -1414,7 +1390,7 @@ static int action_list_or_mtree_or_copy_or_make_archive(DissectedImage *m, LoopD
                                 AT_FDCWD, arg_target,
                                 arg_copy_ownership == 0 ? getuid() : UID_INVALID,
                                 arg_copy_ownership == 0 ? getgid() : GID_INVALID,
-                                COPY_REFLINK|COPY_MERGE|COPY_REPLACE|COPY_SIGINT|COPY_HARDLINKS);
+                                COPY_MERGE|COPY_REPLACE|COPY_SIGINT|COPY_HARDLINKS);
                 if (r >= 0)
                         return 0;
                 if (r != -ENOTDIR)
@@ -1431,7 +1407,7 @@ static int action_list_or_mtree_or_copy_or_make_archive(DissectedImage *m, LoopD
                 if (target_fd < 0)
                         return log_error_errno(errno, "Failed to create regular file at target path '%s': %m", arg_target);
 
-                r = copy_bytes(source_fd, target_fd, UINT64_MAX, COPY_REFLINK);
+                r = copy_bytes(source_fd, target_fd, UINT64_MAX, /* copy_flags= */ 0);
                 if (r < 0)
                         return log_error_errno(r, "Failed to copy bytes from %s in mage '%s' to '%s': %m", arg_source, arg_image, arg_target);
 
@@ -1470,7 +1446,7 @@ static int action_list_or_mtree_or_copy_or_make_archive(DissectedImage *m, LoopD
                         if (target_fd < 0)
                                 return log_error_errno(errno, "Failed to open target file '%s': %m", arg_target);
 
-                        r = copy_bytes(STDIN_FILENO, target_fd, UINT64_MAX, COPY_REFLINK);
+                        r = copy_bytes(STDIN_FILENO, target_fd, UINT64_MAX, /* copy_flags= */ 0);
                         if (r < 0)
                                 return log_error_errno(r, "Failed to copy bytes from stdin to '%s' in image '%s': %m", arg_target, arg_image);
 
@@ -1503,7 +1479,7 @@ static int action_list_or_mtree_or_copy_or_make_archive(DissectedImage *m, LoopD
                                                 dfd, bn,
                                                 arg_copy_ownership == 0 ? getuid() : UID_INVALID,
                                                 arg_copy_ownership == 0 ? getgid() : GID_INVALID,
-                                                COPY_REFLINK|COPY_MERGE|COPY_REPLACE|COPY_SIGINT|COPY_HARDLINKS,
+                                                COPY_MERGE|COPY_REPLACE|COPY_SIGINT|COPY_HARDLINKS,
                                                 /* denylist= */ NULL,
                                                 /* subvolumes= */ NULL);
                         } else
@@ -1512,7 +1488,7 @@ static int action_list_or_mtree_or_copy_or_make_archive(DissectedImage *m, LoopD
                                                 target_fd, ".",
                                                 arg_copy_ownership == 0 ? getuid() : UID_INVALID,
                                                 arg_copy_ownership == 0 ? getgid() : GID_INVALID,
-                                                COPY_REFLINK|COPY_MERGE|COPY_REPLACE|COPY_SIGINT|COPY_HARDLINKS,
+                                                COPY_MERGE|COPY_REPLACE|COPY_SIGINT|COPY_HARDLINKS,
                                                 /* denylist= */ NULL,
                                                 /* subvolumes= */ NULL);
                         if (r < 0)
@@ -1529,7 +1505,7 @@ static int action_list_or_mtree_or_copy_or_make_archive(DissectedImage *m, LoopD
                 if (target_fd < 0)
                         return log_error_errno(errno, "Failed to open target file '%s': %m", arg_target);
 
-                r = copy_bytes(source_fd, target_fd, UINT64_MAX, COPY_REFLINK);
+                r = copy_bytes(source_fd, target_fd, UINT64_MAX, /* copy_flags= */ 0);
                 if (r < 0)
                         return log_error_errno(r, "Failed to copy bytes from '%s' to '%s' in image '%s': %m", arg_source, arg_target, arg_image);
 
@@ -1587,7 +1563,7 @@ static int action_list_or_mtree_or_copy_or_make_archive(DissectedImage *m, LoopD
                         output_fd = STDOUT_FILENO;
                 }
 
-                r = tar_c(dfd, output_fd, arg_target, /* flags= */ 0);
+                r = tar_c(dfd, output_fd, arg_target, /* hardlink_db_fd= */ -EBADF, /* flags= */ 0);
                 if (r < 0)
                         return r;
 
@@ -1966,6 +1942,14 @@ static int run(int argc, char *argv[]) {
         _cleanup_(loop_device_unrefp) LoopDevice *d = NULL;
         _cleanup_close_ int userns_fd = -EBADF;
         int r;
+
+        LIBACL_NOTE(recommended);
+        LIBARCHIVE_NOTE(recommended);
+        LIBBLKID_NOTE(recommended);
+        LIBCRYPTO_NOTE(suggested);
+        LIBCRYPTSETUP_NOTE(suggested);
+        LIBMOUNT_NOTE(recommended);
+        LIBSELINUX_NOTE(recommended);
 
         log_setup();
 

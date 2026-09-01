@@ -98,8 +98,8 @@ typedef struct Link {
         unsigned static_address_label_messages;
         unsigned static_bridge_fdb_messages;
         unsigned static_bridge_mdb_messages;
-        unsigned static_ipv6_proxy_ndp_messages;
         unsigned static_neighbor_messages;
+        unsigned static_neighbor_proxy_messages;
         unsigned static_nexthop_messages;
         unsigned static_route_messages;
         unsigned static_routing_policy_rule_messages;
@@ -130,8 +130,8 @@ typedef struct Link {
         bool static_address_labels_configured:1;
         bool static_bridge_fdb_configured:1;
         bool static_bridge_mdb_configured:1;
-        bool static_ipv6_proxy_ndp_configured:1;
         bool static_neighbors_configured:1;
+        bool static_neighbor_proxy_configured:1;
         bool static_nexthops_configured:1;
         bool static_routes_configured:1;
         bool static_routing_policy_rules_configured:1;
@@ -222,6 +222,7 @@ int link_get_master(Link *link, Link **ret);
 int link_getlink_handler_internal(sd_netlink *rtnl, sd_netlink_message *m, Link *link, const char *error_msg);
 int link_call_getlink(Link *link, link_netlink_message_handler_t callback);
 int link_handle_bound_to_list(Link *link);
+int link_append_to_master(Link *link);
 
 void link_enter_failed(Link *link);
 void link_set_state(Link *link, LinkState state);

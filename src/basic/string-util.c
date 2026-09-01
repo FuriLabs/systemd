@@ -293,13 +293,15 @@ static size_t previous_ansi_sequence(const char *s, size_t length, const char **
                 return 0;
         }
 
-        for (size_t i = length - 2; i > 0; i--) {  /* -2 because at least two bytes are needed */
-                size_t slen = ansi_sequence_length(s + (i - 1), length - (i - 1));
-                if (slen == 0)
-                        continue;
+        for (size_t i = length - 2;; i--) {  /* -2 because at least two bytes are needed */
+                size_t slen = ansi_sequence_length(s + i, length - i);
+                if (slen > 0) {
+                        *ret_where = s + i;
+                        return slen;
+                }
 
-                *ret_where = s + (i - 1);
-                return slen;
+                if (i == 0)
+                        break;
         }
 
         *ret_where = NULL;
@@ -1050,23 +1052,29 @@ char* strrep(const char *s, size_t n) {
 int split_pair(const char *s, const char *sep, char **ret_first, char **ret_second) {
         assert(s);
         assert(!isempty(sep));
-        assert(ret_first);
-        assert(ret_second);
 
         const char *x = strstr(s, sep);
         if (!x)
                 return -EINVAL;
 
-        _cleanup_free_ char *a = strndup(s, x - s);
-        if (!a)
-                return -ENOMEM;
+        _cleanup_free_ char *a = NULL;
+        if (ret_first) {
+                a = strndup(s, x - s);
+                if (!a)
+                        return -ENOMEM;
+        }
 
-        _cleanup_free_ char *b = strdup(x + strlen(sep));
-        if (!b)
-                return -ENOMEM;
+        _cleanup_free_ char *b = NULL;
+        if (ret_second) {
+                b = strdup(x + strlen(sep));
+                if (!b)
+                        return -ENOMEM;
+        }
 
-        *ret_first = TAKE_PTR(a);
-        *ret_second = TAKE_PTR(b);
+        if (ret_first)
+                *ret_first = TAKE_PTR(a);
+        if (ret_second)
+                *ret_second = TAKE_PTR(b);
         return 0;
 }
 
@@ -1512,28 +1520,47 @@ char* find_line_after_internal(const char *haystack, const char *needle) {
         return NULL;
 }
 
-bool version_is_valid(const char *s) {
-        if (isempty(s))
+bool version_is_valid(const char *s, VersionFlags flags) {
+
+        /* Validates a version string superficially. This does not process the version string in any
+         * semantical way, it mostly just validates that its charset is reasonable. */
+
+        if (FLAGS_SET(flags, VERSION_ALLOW_EMPTY) ? !s : isempty(s))
                 return false;
 
         if (!filename_part_is_valid(s))
                 return false;
 
-        /* This is a superset of the characters used by semver. We additionally allow "," and "_". */
-        if (!in_charset(s, ALPHANUMERICAL ".,_-+"))
-                return false;
+        /* We always allow all characters specified by the UAPI.10 Version Specification, i.e. 0-9, a-z, A-Z,
+         * ".", "-", "~", "^".
+         *
+         * If the relevant flags are set we'll also allow "+" and "_" separators.
+         *
+         * Note that with SemVer allows 0-9, a-z, A-Z, "+", "-", ".", hence with VERSION_ALLOW_PLUS we
+         * implement a superset of it.
+         *
+         * If you wonder when to use which flags: when validating foreign versions (e.g. distribution
+         * versions in /etc/os-release or so) validate liberally, i.e. add
+         * VERSION_ALLOW_UNDERSCORE|VERSION_ALLOW_PLUS. When validating our own versioned objects (e.g. vpick
+         * or so) validate more strictly, and in particular refuse characters such as "_" and "+" that may be
+         * used for separating component names or boot attempt counters. Also: first – if appropriate – split
+         * the string into individual components. For example, if the string consists of a name and a
+         * version, separated by some character, only pass the version part to this function. The name part
+         * may pass verification, but it's cleaner to not rely on that.
+         *
+         * For details about UAPI.10 see:
+         *
+         * → https://uapi-group.org/specifications/specs/version_format_specification/ */
 
-        return true;
-}
+        char charset[] = ALPHANUMERICAL ".-~^" /* plus room for the two chars below: */ "\0\0";
+        size_t l = strlen(charset);
 
-bool version_is_valid_versionspec(const char *s) {
-        if (!filename_part_is_valid(s))
-                return false;
+        if (FLAGS_SET(flags, VERSION_ALLOW_UNDERSCORE))
+                charset[l++] = '_';
+        if (FLAGS_SET(flags, VERSION_ALLOW_PLUS))
+                charset[l++] = '+';
 
-        if (!in_charset(s, ALPHANUMERICAL "-.~^"))
-                return false;
-
-        return true;
+        return in_charset(s, charset);
 }
 
 ssize_t strlevenshtein(const char *x, const char *y) {

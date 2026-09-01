@@ -11,6 +11,7 @@
 #include "log.h"
 #include "path-lookup.h"
 #include "show-status.h"
+#include "transaction.h"
 #include "unit.h"
 
 struct libmnt_monitor;
@@ -77,6 +78,18 @@ typedef enum ManagerObjective {
  * 6. TIMESTAMP_USERSPACE is the timestamp of when the manager was started.
  *
  * 7. TIMESTAMP_INITRD_* are set only when the system is booted with an initrd.
+ *
+ * 8. TIMESTAMP_SHUTDOWN_START and TIMESTAMP_SHUTDOWN_FINISH bracket the unit-stopping phase during the
+ *    current shutdown (the latter is also propagated across soft-reboot).
+ *
+ * 9. TIMESTAMP_PREVIOUS_SHUTDOWN_START, TIMESTAMP_PREVIOUS_SHUTDOWN_FINISH,
+ *    TIMESTAMP_PREVIOUS_SHUTDOWN_LATE_START and TIMESTAMP_PREVIOUS_SHUTDOWN_LATE_FINISH describe the
+ *    shutdown of the *previous* boot: either restored from the LUO payload after a kexec-based live
+ *    update, or carried over from the current cycle's SHUTDOWN_START/FINISH across a soft-reboot. The
+ *    LATE_* ones are taken by systemd-shutdown and hence only set for the kexec case. Like
+ *    TIMESTAMP_FIRMWARE/LOADER/KERNEL they refer to events before the current systemd cycle took over,
+ *    hence they are kept distinct from the current cycle's SHUTDOWN_START/FINISH instead of overwriting
+ *    them.
  */
 
 typedef enum ManagerTimestamp {
@@ -103,6 +116,12 @@ typedef enum ManagerTimestamp {
         MANAGER_TIMESTAMP_INITRD_UNITS_LOAD_FINISH,
 
         MANAGER_TIMESTAMP_SHUTDOWN_START,
+        MANAGER_TIMESTAMP_SHUTDOWN_FINISH,
+
+        MANAGER_TIMESTAMP_PREVIOUS_SHUTDOWN_START,
+        MANAGER_TIMESTAMP_PREVIOUS_SHUTDOWN_FINISH,
+        MANAGER_TIMESTAMP_PREVIOUS_SHUTDOWN_LATE_START,
+        MANAGER_TIMESTAMP_PREVIOUS_SHUTDOWN_LATE_FINISH,
 
         _MANAGER_TIMESTAMP_MAX,
         _MANAGER_TIMESTAMP_INVALID = -EINVAL,
@@ -322,6 +341,11 @@ typedef struct Manager {
         sd_bus_track *subscribed;
         char **subscribed_as_strv;
 
+        /* Set once bus_setup_api() succeeded for the current API bus connection, i.e. after any
+         * subscriptions deserialized from a previous reload/reexec were coldplugged. Unset when the
+         * connection is torn down. */
+        bool api_bus_ready;
+
         /* The bus id of API bus acquired through org.freedesktop.DBus.GetId, which before deserializing
          * subscriptions we'd use to verify the bus is still the same instance as before. */
         sd_id128_t bus_id, deserialized_bus_id;
@@ -490,6 +514,9 @@ typedef struct Manager {
         int restrict_fsaccess_link_fds[_RESTRICT_FILESYSTEM_ACCESS_LINK_MAX];
         int restrict_fsaccess_bss_map_fd;
 
+        /* Whether the ptrace seccomp filter is installed in this process; it survives execve() */
+        bool restrict_fsaccess_ptrace_filter;
+
         /* Allow users to configure a rate limit for Reload()/Reexecute() operations */
         RateLimit reload_reexec_ratelimit;
         /* Dump*() are slow, so always rate limit them to 10 per 10 minutes */
@@ -505,10 +532,12 @@ typedef struct Manager {
 
         /* Pin the systemd-executor binary, so that it never changes until re-exec, ensuring we don't have
          * serialization/deserialization compatibility issues during upgrades. */
-        char *executor_path;
         int executor_fd;
 
         unsigned soft_reboots_count;
+
+        /* When LUO is enabled we can count consecutive kexec reboots. */
+        unsigned kexecs_count;
 
         /* The number of successfully completed configuration reloads. */
         uint64_t reload_count;
@@ -571,8 +600,19 @@ bool manager_unit_cache_should_retry_load(Unit *u);
 int manager_load_unit_prepare(Manager *m, const char *name, const char *path, sd_bus_error *e, Unit **ret);
 int manager_load_unit(Manager *m, const char *name, const char *path, sd_bus_error *e, Unit **ret);
 int manager_dispatch_external_fd_to_unit(Manager *m, const char *unit_id, const char *fdname, uint64_t index, int fd, const char *log_context);
-int manager_load_startable_unit_or_warn(Manager *m, const char *name, const char *path, Unit **ret);
+int manager_load_startable_unit_or_warn(Manager *m, const char *name, const char *path, int log_level, Unit **ret);
 int manager_load_unit_from_dbus_path(Manager *m, const char *s, sd_bus_error *e, Unit **_u);
+
+int manager_add_jobs(
+                Manager *m,
+                JobType type,
+                char * const *names,
+                bool reload_if_possible,
+                JobMode mode,
+                TransactionAddFlags extra_flags,
+                Set *affected_jobs,
+                sd_bus_error *reterr_error,
+                Set *ret_jobs);
 
 int manager_add_job_full(
                 Manager *m,
@@ -592,7 +632,7 @@ int manager_add_job(
                 Job **ret);
 
 int manager_add_job_by_name(Manager *m, JobType type, const char *name, JobMode mode, Set *affected_jobs, sd_bus_error *e, Job **ret);
-int manager_add_job_by_name_and_warn(Manager *m, JobType type, const char *name, JobMode mode, Set *affected_jobs, Job **ret);
+int manager_add_job_by_name_or_warn(Manager *m, JobType type, const char *name, JobMode mode, Set *affected_jobs, Job **ret);
 int manager_propagate_reload(Manager *m, Unit *unit, JobMode mode, sd_bus_error *e);
 
 void manager_clear_jobs(Manager *m);

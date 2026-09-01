@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 #pragma once
 
-#include "basic-forward.h"
+#include "forward.h"
 
 #define LONG_LINE_MAX (1U*1024U*1024U)
 
@@ -45,7 +45,10 @@ static inline int write_string_stream(FILE *f, const char *line, WriteStringFile
         return write_string_stream_full(f, line, flags, NULL);
 }
 
-int write_string_file_full(int dir_fd, const char *fn, const char *line, WriteStringFileFlags flags, const struct timespec *ts, const char *label_fn);
+int write_string_file_full_label(int dir_fd, const char *fn, const char *line, WriteStringFileFlags flags, const struct timespec *ts, const char *label_fn, LabelContext *label_context);
+static inline int write_string_file_full(int dir_fd, const char *fn, const char *line, WriteStringFileFlags flags, const struct timespec *ts, const char *label_fn) {
+        return write_string_file_full_label(dir_fd, fn, line, flags, ts, label_fn, /* label_context= */ NULL);
+}
 static inline int write_string_file_at(int dir_fd, const char *fn, const char *line, WriteStringFileFlags flags) {
         return write_string_file_full(dir_fd, fn, line, flags, NULL, NULL);
 }
@@ -56,6 +59,7 @@ static inline int write_string_file(const char *fn, const char *line, WriteStrin
         return write_string_file_at(AT_FDCWD, fn, line, flags);
 }
 int write_string_filef(const char *fn, WriteStringFileFlags flags, const char *format, ...) _printf_(3, 4);
+int write_string_filef_at(int dir_fd, const char *fn, WriteStringFileFlags flags, const char *format, ...) _printf_(4, 5);
 
 int write_base64_file_at(int dir_fd, const char *fn, const struct iovec *data, WriteStringFileFlags flags);
 

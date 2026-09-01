@@ -3,12 +3,14 @@
 
 #include <sys/uio.h>                /* IWYU pragma: export */
 
-#include "basic-forward.h"
+#include "forward.h"
 
 #include "../fundamental/iovec-util.h" /* IWYU pragma: export */
 
 extern const struct iovec iovec_nul_byte; /* Points to a single NUL byte */
 extern const struct iovec iovec_empty;    /* Points to an empty, but valid (i.e. non-NULL) pointer */
+
+int iovec_alloc(size_t n, struct iovec *ret);
 
 size_t iovec_total_size(const struct iovec *iovec, size_t n) _nonnull_if_nonzero_(1, 2);
 
@@ -27,10 +29,17 @@ struct iovec* iovec_make_string(struct iovec *iovec, const char *s);
 
 #define IOVEC_MAKE_BYTE(c)                                      \
         (const struct iovec) {                                  \
-                .iov_base = (char*) ((const char[]) { c }),     \
+                .iov_base = (char*) ((const char[]) { (c) }),   \
                 .iov_len = 1,                                   \
         }
 
+#define IOVEC_ALLOCA(n)                              \
+        ({                                           \
+                size_t _n_ = (n);                    \
+                IOVEC_MAKE(alloca_safe(_n_), _n_);   \
+        })
+
+void iovec_erase(struct iovec *iovec);
 void iovec_done_erase(struct iovec *iovec);
 
 char* set_iovec_string_field(struct iovec *iovec, size_t *n_iovec, const char *field, const char *value);

@@ -4,6 +4,7 @@
 #include <grp.h>
 #include <linux/pkt_sched.h>
 #include <netinet/ip.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include "alloc-util.h"
@@ -174,12 +175,10 @@ TEST(getpeercred_getpeergroups) {
 
                         ASSERT_OK(fully_set_uid_gid(test_uid, test_gid, test_gids, n_test_gids));
                 } else {
-                        long ngroups_max;
-
                         test_uid = getuid();
                         test_gid = getgid();
 
-                        ngroups_max = ASSERT_OK_POSITIVE(sysconf(_SC_NGROUPS_MAX));
+                        int ngroups_max = ASSERT_OK_POSITIVE(sysconf_ngroups_max());
 
                         test_gids = newa(gid_t, ngroups_max);
 
@@ -520,6 +519,18 @@ TEST(tos_to_priority) {
 
         ASSERT_EQ(tos_to_priority(0x00), TC_PRIO_BESTEFFORT);
         ASSERT_EQ(tos_to_priority(0xff), TC_PRIO_CONTROL);
+}
+
+TEST(socket_xattr_supported) {
+        int r;
+
+        r = socket_xattr_supported();
+        ASSERT_OK(r);
+
+        log_info("Extended attributes on socket inodes supported: %s", yes_no(r));
+
+        /* A second call must agree with the first. */
+        ASSERT_EQ(socket_xattr_supported(), r);
 }
 
 DEFINE_TEST_MAIN(LOG_DEBUG);

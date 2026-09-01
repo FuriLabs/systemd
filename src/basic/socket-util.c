@@ -13,6 +13,7 @@
 #include <poll.h>
 #include <stdio.h>
 #include <sys/ioctl.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include "alloc-util.h"
@@ -36,6 +37,8 @@
 #include "string-util.h"
 #include "strv.h"
 #include "sysctl-util.h"
+#include "user-util.h"
+#include "xattr-util.h"
 
 #if ENABLE_IDN
 #  define IDN_FLAGS NI_IDN
@@ -910,7 +913,7 @@ int getpeergroups(int fd, gid_t **ret) {
         assert(fd >= 0);
         assert(ret);
 
-        long ngroups_max = sysconf(_SC_NGROUPS_MAX);
+        int ngroups_max = sysconf_ngroups_max();
         if (ngroups_max > 0)
                 n = MAX(n, sizeof(gid_t) * (socklen_t) ngroups_max);
 
@@ -1732,7 +1735,7 @@ int vsock_parse_cid(const char *s, unsigned *ret) {
                 return -EINVAL;
 
         /* Parsed an AF_VSOCK "CID". This is a 32bit entity, and the usual type is "unsigned". We recognize
-         * the three special CIDs as strings, and otherwise parse the numeric CIDs. */
+         * the four special CIDs as strings, and otherwise parse the numeric CIDs. */
 
         if (streq(s, "hypervisor"))
                 *ret = VMADDR_CID_HYPERVISOR;
@@ -1740,6 +1743,8 @@ int vsock_parse_cid(const char *s, unsigned *ret) {
                 *ret = VMADDR_CID_LOCAL;
         else if (streq(s, "host"))
                 *ret = VMADDR_CID_HOST;
+        else if (STR_IN_SET(s, "any", "-1"))
+                *ret = VMADDR_CID_ANY;
         else
                 return safe_atou(s, ret);
 
@@ -1890,4 +1895,28 @@ int tos_to_priority(uint8_t tos) {
         default:
                 return TC_PRIO_BESTEFFORT;
         }
+}
+
+int socket_xattr_supported(void) {
+        int r;
+
+        // FIXME: Drop this check once Linux 7.1 becomes our baseline
+
+        static int cached = -1;
+        if (cached >= 0)
+                return cached;
+
+        _cleanup_close_ int fd = socket(AF_UNIX, SOCK_DGRAM|SOCK_CLOEXEC, /* protocol= */ 0);
+        if (fd < 0)
+                return -errno;
+
+        /* Old kernels return EPERM. But let's also check for more appropriate error codes, to be friendly to
+         * seccomp policies */
+        r = xsetxattr(fd, /* path= */ NULL, AT_EMPTY_PATH, "user.testxxx", "1");
+        if (ERRNO_IS_NEG_NOT_SUPPORTED(r) || r == -EPERM)
+                return (cached = false);
+        if (r < 0)
+                return log_debug_errno(r, "Failed to set test xattr on socket: %m");
+
+        return (cached = true);
 }

@@ -251,6 +251,24 @@ cgroupfs_supports_user_xattrs() {
     [[ "$(getfattr --name="$xattr" --absolute-names --only-values /sys/fs/cgroup)" -eq 254 ]]
 }
 
+socket_inode_supports_user_xattrs() {
+    local socket xattr
+
+    # The XAttr*= socket settings and "varlinkctl list-sockets" rely on extended
+    # attributes on socket inodes. This needs a sufficiently new kernel, but the
+    # kernel version alone is not a reliable indicator: some kernels that report
+    # >= 7.0 still reject user.* xattrs on socket inodes (with EPERM/EOPNOTSUPP).
+    # Hence probe for actual support, mirroring socket_xattr_supported() in the
+    # C code, by binding a throwaway socket and trying to tag it.
+    socket="$(mktemp -u /run/socket-xattr-probe.XXXXXX.sock)"
+    xattr="user.probe_$RANDOM"
+    # shellcheck disable=SC2064
+    trap "rm -f '$socket'" RETURN
+
+    python3 -c 'import socket, sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$socket" || return 1
+    setfattr --name="$xattr" --value=1 "$socket" 2>/dev/null
+}
+
 tpm_has_pcr() {
     local algorithm="${1:?}"
     local pcr="${2:?}"
@@ -557,4 +575,25 @@ find_qemu_binary() {
     esac
 
     command -v "qemu-system-$arch" >/dev/null 2>&1
+}
+
+# Waits for a systemd-vmspawn machine to register with machined. If vmspawn bailed out because
+# vhost-user-fs isn't available (e.g. inside a nested VM) the test is skipped gracefully; any other
+# early vmspawn exit is treated as a failure. Args: machine name, vmspawn PID, vmspawn console log.
+wait_for_machine() {
+    local machine="$1" pid="$2" log="$3"
+    timeout 30 bash -c "
+        while ! machinectl list --no-legend 2>/dev/null | grep >/dev/null '$machine'; do
+            if ! kill -0 $pid 2>/dev/null; then
+                if grep >/dev/null 'virtiofs.*QMP\|vhost-user-fs-pci' '$log'; then
+                    echo 'vhost-user-fs not supported (nested VM?), skipping'
+                    exit 77
+                fi
+                echo 'vmspawn exited before registering'
+                cat '$log'
+                exit 1
+            fi
+            sleep .5
+        done
+    "
 }

@@ -1,7 +1,5 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 
-#include "sd-dlopen.h"
-
 #include "log.h"                /* IWYU pragma: keep */
 #include "ssl-util.h"
 #include "strv.h"
@@ -38,10 +36,9 @@ int dlopen_libssl(int log_level) {
         static void *libssl_dl = NULL;
         int r;
 
-        LIBSSL_NOTE(SD_ELF_NOTE_DLOPEN_PRIORITY_SUGGESTED);
+        LIBSSL_NOTE(suggested);
 
-        // FIXME: switch order to prefer libssl.so.4 in a future version once it has stabilized
-        FOREACH_STRING(soname, "libssl.so.3", "libssl.so.4") {
+        FOREACH_STRING(soname, "libssl.so.4", "libssl.so.3") {
                 r = dlopen_many_sym_or_warn(
                                 &libssl_dl,
                                 soname,

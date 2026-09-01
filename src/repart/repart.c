@@ -32,7 +32,6 @@
 #include "devnum-util.h"
 #include "dirent-util.h"
 #include "dissect-image.h"
-#include "efivars.h"
 #include "errno-util.h"
 #include "extract-word.h"
 #include "factory-reset.h"
@@ -62,7 +61,6 @@
 #include "mount-util.h"
 #include "mountpoint-util.h"
 #include "nulstr-util.h"
-#include "options.h"
 #include "parse-argument.h"
 #include "parse-helpers.h"
 #include "parse-util.h"
@@ -70,6 +68,7 @@
 #include "process-util.h"
 #include "random-util.h"
 #include "ratelimit.h"
+#include "repart-list-candidate-devices.h"
 #include "reread-partition-table.h"
 #include "resize-fs.h"
 #include "rm-rf.h"
@@ -88,6 +87,7 @@
 #include "utf8.h"
 #include "varlink-io.systemd.Repart.h"
 #include "varlink-util.h"
+#include "verbs.h"
 #include "xattr-util.h"
 
 /* If not configured otherwise use a minimal partition size of 10M */
@@ -189,6 +189,7 @@ static char *arg_tpm2_device_key = NULL;
 static Tpm2PCRValue *arg_tpm2_hash_pcr_values = NULL;
 static size_t arg_tpm2_n_hash_pcr_values = 0;
 static char *arg_tpm2_public_key = NULL;
+static char *arg_tpm2_public_key_policyref = NULL;
 static uint32_t arg_tpm2_public_key_pcr_mask = 0;
 static char *arg_tpm2_pcrlock = NULL;
 static bool arg_split = false;
@@ -213,6 +214,7 @@ static char *arg_generate_crypttab = NULL;
 static Set *arg_verity_settings = NULL;
 static bool arg_relax_copy_block_security = false;
 static bool arg_varlink = false;
+static int arg_cow = -1;
 static bool arg_eltorito = false;
 static char *arg_eltorito_system = NULL;
 static char *arg_eltorito_volume = NULL;
@@ -231,6 +233,7 @@ STATIC_DESTRUCTOR_REGISTER(arg_tpm2_device, freep);
 STATIC_DESTRUCTOR_REGISTER(arg_tpm2_device_key, freep);
 STATIC_DESTRUCTOR_REGISTER(arg_tpm2_hash_pcr_values, freep);
 STATIC_DESTRUCTOR_REGISTER(arg_tpm2_public_key, freep);
+STATIC_DESTRUCTOR_REGISTER(arg_tpm2_public_key_policyref, freep);
 STATIC_DESTRUCTOR_REGISTER(arg_tpm2_pcrlock, freep);
 STATIC_DESTRUCTOR_REGISTER(arg_filter_partitions, freep);
 STATIC_DESTRUCTOR_REGISTER(arg_defer_partitions, freep);
@@ -244,6 +247,14 @@ STATIC_DESTRUCTOR_REGISTER(arg_verity_settings, set_freep);
 STATIC_DESTRUCTOR_REGISTER(arg_eltorito_system, freep);
 STATIC_DESTRUCTOR_REGISTER(arg_eltorito_volume, freep);
 STATIC_DESTRUCTOR_REGISTER(arg_eltorito_publisher, freep);
+
+COMMAND(
+        "systemd-repart\0",
+        "Grow and add partitions to a partition table, and generate disk images (DDIs).",
+        .argspec = "[DEVICE]\0",
+        .man_pages = "systemd-repart(8)\0",
+        .pager_flags = &arg_pager_flags,
+);
 
 typedef enum ProgressPhase {
         PROGRESS_LOADING_DEFINITIONS,
@@ -539,8 +550,8 @@ typedef struct Partition {
         RateLimit progress_ratelimit;
 
         char *supplement_for_name;
-        struct Partition *supplement_for, *supplement_target_for;
-        struct Partition *suppressing;
+        struct Partition *supplement_for, *supplemented_by;
+        bool suppressing_supplement;
 
         struct Partition *siblings[_VERITY_MODE_MAX];
 
@@ -549,7 +560,7 @@ typedef struct Partition {
 
 #define PARTITION_IS_FOREIGN(p) (!(p)->definition_path)
 #define PARTITION_EXISTS(p) (!!(p)->current_partition)
-#define PARTITION_SUPPRESSED(p) ((p)->supplement_for && (p)->supplement_for->suppressing == (p))
+#define PARTITION_SUPPRESSED(p) ((p)->supplement_for && (p)->supplement_for->suppressing_supplement)
 
 struct FreeArea {
         Partition *after;
@@ -793,23 +804,24 @@ static Partition *partition_new(Context *c) {
 static void partition_unlink_supplement(Partition *p) {
         assert(p);
 
-        assert(!p->supplement_for || !p->supplement_target_for); /* Can't be both */
+        assert(!p->supplement_for || !p->supplemented_by); /* Can't be both */
 
-        if (p->supplement_target_for) {
-                assert(p->supplement_target_for->supplement_for == p);
+        if (p->supplemented_by) {
+                assert(p->supplemented_by->supplement_for == p);
 
-                p->supplement_target_for->supplement_for = NULL;
+                p->supplemented_by->supplement_for = NULL;
         }
 
         if (p->supplement_for) {
-                assert(p->supplement_for->supplement_target_for == p);
-                assert(!p->supplement_for->suppressing || p->supplement_for->suppressing == p);
+                assert(p->supplement_for->supplemented_by == p);
 
-                p->supplement_for->supplement_target_for = p->supplement_for->suppressing = NULL;
+                p->supplement_for->supplemented_by = NULL;
+                p->supplement_for->suppressing_supplement = false;
         }
 
         p->supplement_for_name = mfree(p->supplement_for_name);
-        p->supplement_target_for = p->supplement_for = p->suppressing = NULL;
+        p->supplemented_by = p->supplement_for = NULL;
+        p->suppressing_supplement = false;
 }
 
 static Partition* partition_free(Partition *p) {
@@ -1096,7 +1108,7 @@ static void partition_drop_or_foreignize(Partition *p) {
 
                 /* If a supplement partition is dropped, we don't want to merge in its settings. */
                 if (PARTITION_SUPPRESSED(p))
-                        p->supplement_for->suppressing = NULL;
+                        p->supplement_for->suppressing_supplement = false;
         }
 }
 
@@ -1209,8 +1221,8 @@ static uint64_t partition_min_size(const Context *context, const Partition *p) {
         }
 
         uint64_t min_size = p->size_min;
-        if (p->suppressing && (min_size == UINT64_MAX || p->suppressing->size_min > min_size))
-                min_size = p->suppressing->size_min;
+        if (p->suppressing_supplement && (min_size == UINT64_MAX || p->supplemented_by->size_min > min_size))
+                min_size = p->supplemented_by->size_min;
 
         /* Default to 10M min size, except if the file system is read-only, in which case let's not enforce a
          * minimum size, because even if we wanted to we couldn't take possession of the extra space
@@ -1240,7 +1252,7 @@ static uint64_t partition_max_size(const Context *context, const Partition *p) {
         if (partition_designator_is_verity_sig(p->type.designator))
                 return VERITY_SIG_SIZE;
 
-        override_max = p->suppressing ? MIN(p->size_max, p->suppressing->size_max) : p->size_max;
+        override_max = p->suppressing_supplement ? MIN(p->size_max, p->supplemented_by->size_max) : p->size_max;
         if (override_max == UINT64_MAX)
                 return UINT64_MAX;
 
@@ -1257,13 +1269,13 @@ static uint64_t partition_min_padding(const Partition *p) {
 
         assert(p);
 
-        override_min = p->suppressing ? MAX(p->padding_min, p->suppressing->padding_min) : p->padding_min;
+        override_min = p->suppressing_supplement ? MAX(p->padding_min, p->supplemented_by->padding_min) : p->padding_min;
         return override_min != UINT64_MAX ? override_min : 0;
 }
 
 static uint64_t partition_max_padding(const Partition *p) {
         assert(p);
-        return p->suppressing ? MIN(p->padding_max, p->suppressing->padding_max) : p->padding_max;
+        return p->suppressing_supplement ? MIN(p->padding_max, p->supplemented_by->padding_max) : p->padding_max;
 }
 
 static uint64_t partition_min_size_with_padding(const Context *context, const Partition *p) {
@@ -1433,32 +1445,28 @@ static bool context_unmerge_and_allocate_partitions(Context *context) {
 
         /* First, let's try to un-suppress just one supplement partition and see if that gets us anywhere */
         LIST_FOREACH(partitions, p, context->partitions) {
-                Partition *unsuppressed;
-
-                if (!p->suppressing)
+                if (!p->suppressing_supplement)
                         continue;
 
-                unsuppressed = TAKE_PTR(p->suppressing);
+                p->suppressing_supplement = false;
 
                 if (context_allocate_partitions(context, NULL))
                         return true;
 
-                p->suppressing = unsuppressed;
+                p->suppressing_supplement = true;
         }
 
         /* Looks like not. So we have to un-suppress at least two partitions. We can do this recursively */
         LIST_FOREACH(partitions, p, context->partitions) {
-                Partition *unsuppressed;
-
-                if (!p->suppressing)
+                if (!p->suppressing_supplement)
                         continue;
 
-                unsuppressed = TAKE_PTR(p->suppressing);
+                p->suppressing_supplement = false;
 
                 if (context_unmerge_and_allocate_partitions(context))
                         return true;
 
-                p->suppressing = unsuppressed;
+                p->suppressing_supplement = true;
         }
 
         /* No combination of un-suppressed supplements made it possible to fit the partitions */
@@ -1467,12 +1475,12 @@ static bool context_unmerge_and_allocate_partitions(Context *context) {
 
 static uint32_t partition_weight(const Partition *p) {
         assert(p);
-        return p->suppressing ? p->suppressing->weight : p->weight;
+        return p->suppressing_supplement ? p->supplemented_by->weight : p->weight;
 }
 
 static uint32_t partition_padding_weight(const Partition *p) {
         assert(p);
-        return p->suppressing ? p->suppressing->padding_weight : p->padding_weight;
+        return p->suppressing_supplement ? p->supplemented_by->padding_weight : p->padding_weight;
 }
 
 static int context_sum_weights(const Context *context, const FreeArea *a, uint64_t *ret) {
@@ -1709,10 +1717,18 @@ static int context_grow_partitions_on_free_area(Context *context, FreeArea *a) {
                                 break;
                 }
 
-        /* Yuck, still no one? Then make it padding */
-        if (span > 0 && a->after) {
-                assert(a->after->new_padding != UINT64_MAX);
-                a->after->new_padding += span;
+        /* Partitions didn't want all the space? Then make it padding */
+        if (span > 0) {
+                Partition *last_partition = NULL;
+
+                LIST_FOREACH(partitions, p, context->partitions)
+                        if (p->allocated_to_area == a || p->padding_area == a)
+                                last_partition = p;
+
+                if (last_partition) {
+                        assert(last_partition->new_padding != UINT64_MAX);
+                        last_partition->new_padding += round_down_size(span, context->grain_size);
+                }
         }
 
         return 0;
@@ -1750,16 +1766,42 @@ static int context_grow_partitions(Context *context) {
         return 0;
 }
 
-static uint64_t find_first_unused_partno(Context *context) {
+static uint64_t find_unused_partno(Context *context, const Partition *partition) {
         uint64_t partno = 0;
+        size_t nents;
 
         assert(context);
+        assert(partition);
 
+        /* Keep new partitions after existing partitions of the same type, as those are matched
+         * to definitions in partition number order. */
+        LIST_FOREACH(partitions, p, context->partitions)
+                if (PARTITION_EXISTS(p) && p->partno != UINT64_MAX &&
+                    sd_id128_equal(p->type.uuid, partition->type.uuid))
+                        partno = MAX(partno, p->partno + 1);
+
+        nents = sym_fdisk_get_npartitions(context->fdisk_context);
+
+        /* Prefer a free slot after all existing partitions of the same type. */
+        for (; partno < nents; partno++) {
+                bool found = false;
+                LIST_FOREACH(partitions, p, context->partitions)
+                        if (p->partno != UINT64_MAX && p->partno == partno) {
+                                found = true;
+                                break;
+                        }
+                if (!found)
+                        return partno;
+        }
+
+        /* Fall back to the first unused slot if there is no such slot. */
         for (partno = 0;; partno++) {
                 bool found = false;
                 LIST_FOREACH(partitions, p, context->partitions)
-                        if (p->partno != UINT64_MAX && p->partno == partno)
+                        if (p->partno != UINT64_MAX && p->partno == partno) {
                                 found = true;
+                                break;
+                        }
                 if (!found)
                         break;
         }
@@ -1795,7 +1837,7 @@ static void context_place_partitions(Context *context) {
                                 continue;
 
                         p->offset = start;
-                        p->partno = find_first_unused_partno(context);
+                        p->partno = find_unused_partno(context, p);
 
                         assert(left >= p->new_size);
                         start += p->new_size;
@@ -2120,7 +2162,7 @@ static int config_parse_copy_files(
         if (!isempty(p))
                 return log_syntax(unit, LOG_ERR, filename, line, SYNTHETIC_ERRNO(EINVAL), "Too many arguments: %s", rvalue);
 
-        CopyFlags flags = COPY_REFLINK|COPY_HOLES|COPY_MERGE|COPY_REPLACE|COPY_SIGINT|COPY_HARDLINKS|COPY_ALL_XATTRS|COPY_GRACEFUL_WARN|COPY_TRUNCATE|COPY_RESTORE_DIRECTORY_TIMESTAMPS;
+        CopyFlags flags = COPY_HOLES|COPY_MERGE|COPY_REPLACE|COPY_SIGINT|COPY_HARDLINKS|COPY_ALL_XATTRS|COPY_GRACEFUL_WARN|COPY_TRUNCATE|COPY_RESTORE_DIRECTORY_TIMESTAMPS;
         for (const char *opts = options;;) {
                 _cleanup_free_ char *word = NULL;
                 const char *val;
@@ -2345,7 +2387,7 @@ static int config_parse_make_symlinks(
         int r;
 
         for (;;) {
-                _cleanup_free_ char *word = NULL, *path = NULL, *target = NULL, *d = NULL;
+                _cleanup_free_ char *word = NULL, *source = NULL, *target = NULL, *resolved_source = NULL, *resolved_target = NULL;
 
                 r = extract_first_word(&p, &word, NULL, EXTRACT_UNQUOTE);
                 if (r == -ENOMEM)
@@ -2358,7 +2400,7 @@ static int config_parse_make_symlinks(
                         return 0;
 
                 const char *q = word;
-                r = extract_many_words(&q, ":", EXTRACT_UNQUOTE|EXTRACT_DONT_COALESCE_SEPARATORS, &path, &target);
+                r = extract_many_words(&q, ":", EXTRACT_UNQUOTE|EXTRACT_DONT_COALESCE_SEPARATORS, &source, &target);
                 if (r < 0) {
                         log_syntax(unit, LOG_WARNING, filename, line, r, "Invalid syntax, ignoring: %s", q);
                         continue;
@@ -2369,18 +2411,26 @@ static int config_parse_make_symlinks(
                         continue;
                 }
 
-                r = specifier_printf(path, PATH_MAX-1, system_and_tmp_specifier_table, arg_root, /* userdata= */ NULL, &d);
+                r = specifier_printf(source, PATH_MAX-1, system_and_tmp_specifier_table, arg_root, /* userdata= */ NULL, &resolved_source);
                 if (r < 0) {
                         log_syntax(unit, LOG_WARNING, filename, line, r,
-                                   "Failed to expand specifiers in Subvolumes= parameter, ignoring: %s", path);
+                                   "Failed to expand specifiers in MakeSymlinks= source, ignoring: %s", source);
                         continue;
                 }
 
-                r = path_simplify_and_warn(d, PATH_CHECK_ABSOLUTE, unit, filename, line, lvalue);
+                r = path_simplify_and_warn(resolved_source, PATH_CHECK_ABSOLUTE, unit, filename, line, lvalue);
                 if (r < 0)
                         continue;
 
-                r = strv_consume_pair(sv, TAKE_PTR(d), TAKE_PTR(target));
+                r = specifier_printf(target, PATH_MAX-1, system_and_tmp_specifier_table, arg_root, /* userdata= */ NULL, &resolved_target);
+                if (r < 0) {
+                        log_syntax(unit, LOG_WARNING, filename, line, r,
+                                   "Failed to expand specifiers in MakeSymlinks= target, ignoring: %s", target);
+                        continue;
+                }
+                /* Don't simplify the symlink target, preserve the exact argument including relative components */
+
+                r = strv_consume_pair(sv, TAKE_PTR(resolved_source), TAKE_PTR(resolved_target));
                 if (r < 0)
                         return log_error_errno(r, "Failed to add symlink to list: %m");
         }
@@ -2669,7 +2719,9 @@ static int config_parse_encrypted_volume(
                 return 0;
         }
 
-        if (!filename_is_valid(volume)) {
+        if (isempty(volume))
+                volume = mfree(volume);
+        else if (!filename_is_valid(volume)) {
                 log_syntax(unit, LOG_WARNING, filename, line, 0,
                            "Volume name %s is not valid, ignoring", volume);
                 return 0;
@@ -2829,13 +2881,13 @@ static bool partition_add_validatefs(const Partition *p) {
 
 static bool partition_needs_populate(const Partition *p) {
         assert(p);
-        assert(!p->supplement_for || !p->suppressing); /* Avoid infinite recursion */
+        assert(!p->supplement_for || !p->suppressing_supplement); /* Avoid infinite recursion */
 
         return p->n_copy_files > 0 ||
                 !strv_isempty(p->make_directories) ||
                 !strv_isempty(p->make_symlinks) ||
                 partition_add_validatefs(p) ||
-                (p->suppressing && partition_needs_populate(p->suppressing));
+                (p->suppressing_supplement && partition_needs_populate(p->supplemented_by));
 }
 
 static MakeFileSystemFlags partition_mkfs_flags(const Partition *p) {
@@ -3089,7 +3141,7 @@ static int partition_read_definition(
                                   "Cannot format %s filesystem without source files, refusing.", p->format);
 
         if (p->verity != VERITY_OFF || p->encrypt != ENCRYPT_OFF) {
-                r = DLOPEN_CRYPTSETUP(LOG_DEBUG, SD_ELF_NOTE_DLOPEN_PRIORITY_RECOMMENDED);
+                r = dlopen_cryptsetup(LOG_DEBUG);
                 if (r < 0)
                         return log_syntax(NULL, LOG_ERR, path, 1, r,
                                           "libcryptsetup not found, Verity=/Encrypt= are not supported: %m");
@@ -3119,9 +3171,9 @@ static int partition_read_definition(
                                    verity_mode_to_string(p->verity));
         }
 
-        if (p->verity != VERITY_OFF && p->encrypt != ENCRYPT_OFF)
+        if (IN_SET(p->verity, VERITY_HASH, VERITY_SIG) && p->encrypt != ENCRYPT_OFF)
                 return log_syntax(NULL, LOG_ERR, path, 1, SYNTHETIC_ERRNO(EINVAL),
-                                  "Encrypting verity hash/data partitions is not supported.");
+                                  "Encrypting verity hash/signature partitions is not supported.");
 
         if (p->verity == VERITY_SIG && (p->size_min != UINT64_MAX || p->size_max != UINT64_MAX))
                 return log_syntax(NULL, LOG_ERR, path, 1, SYNTHETIC_ERRNO(EINVAL),
@@ -3515,10 +3567,10 @@ static int supplement_find_target(const Context *context, const Partition *suppl
                         return log_syntax(NULL, LOG_ERR, supplement->definition_path, 1, SYNTHETIC_ERRNO(EINVAL),
                                           "SupplementFor= target is itself configured as a supplement.");
 
-                if (p->suppressing)
+                if (p->suppressing_supplement)
                         return log_syntax(NULL, LOG_ERR, supplement->definition_path, 1, SYNTHETIC_ERRNO(EINVAL),
                                           "SupplementFor= target already has a supplement defined: %s",
-                                          p->suppressing->definition_path);
+                                          p->supplemented_by->definition_path);
 
                 *ret = p;
                 return 0;
@@ -3648,6 +3700,13 @@ static int context_read_definitions(Context *context) {
                 if (dp->minimize == MINIMIZE_OFF && !(dp->copy_blocks_path || dp->copy_blocks_auto))
                         return log_syntax(NULL, LOG_ERR, p->definition_path, 1, SYNTHETIC_ERRNO(EINVAL),
                                           "Minimize= set for verity hash partition but data partition does not set CopyBlocks= or Minimize=.");
+
+                /* The verity hash of an encrypted data partition covers the ciphertext, which is generated
+                 * with a fresh volume key only when the final image is built, hence it cannot be
+                 * precalculated for minimizing purposes. */
+                if (dp->encrypt != ENCRYPT_OFF)
+                        return log_syntax(NULL, LOG_ERR, p->definition_path, 1, SYNTHETIC_ERRNO(EINVAL),
+                                          "Minimize= cannot be set for verity hash partitions whose data partition is encrypted, use SizeMaxBytes= on the data partition instead.");
         }
 
         LIST_FOREACH(partitions, p, context->partitions) {
@@ -3674,7 +3733,8 @@ static int context_read_definitions(Context *context) {
                                           "PaddingMinBytes= larger than PaddingMaxBytes= when merged with SupplementFor= target.");
 
                 p->supplement_for = tgt;
-                tgt->suppressing = tgt->supplement_target_for = p;
+                tgt->supplemented_by = p;
+                tgt->suppressing_supplement = true;
         }
 
         return 0;
@@ -4097,7 +4157,7 @@ static int context_load_partition_table(Context *context) {
 
         LIST_FOREACH(partitions, p, context->partitions)
                 if (PARTITION_SUPPRESSED(p) && PARTITION_EXISTS(p))
-                        p->supplement_for->suppressing = NULL;
+                        p->supplement_for->suppressing_supplement = false;
 
 add_initial_free_area:
         nsectors = sym_fdisk_get_nsectors(c);
@@ -4195,7 +4255,7 @@ static void context_unload_partition_table(Context *context) {
                 /* A supplement partition is only ever un-suppressed if the existing partition table prevented
                  * us from suppressing it. So when unloading the partition table, we must re-suppress. */
                 if (p->supplement_for)
-                        p->supplement_for->suppressing = p;
+                        p->supplement_for->suppressing_supplement = true;
         }
 
         context->start = UINT64_MAX;
@@ -4327,6 +4387,15 @@ static int context_dump_partitions(Context *context) {
         (void) table_set_align_percent(t, table_get_cell(t, 0, 11), 100);
         (void) table_set_align_percent(t, table_get_cell(t, 0, 12), 100);
 
+        size_t n_partitions = 0;
+        LIST_FOREACH(partitions, p, context->partitions) {
+                if (p->dropped)
+                        continue;
+
+                n_partitions++;
+        }
+
+        size_t cur_n_partition = 0;
         LIST_FOREACH(partitions, p, context->partitions) {
                 _cleanup_free_ char *size_change = NULL, *padding_change = NULL, *partname = NULL, *rh = NULL;
                 char uuid_buffer[SD_ID128_UUID_STRING_MAX];
@@ -4334,6 +4403,8 @@ static int context_dump_partitions(Context *context) {
 
                 if (p->dropped)
                         continue;
+
+                cur_n_partition++;
 
                 if (p->current_size == UINT64_MAX)
                         activity = "create";
@@ -4375,10 +4446,10 @@ static int context_dump_partitions(Context *context) {
                                 TABLE_UINT64, p->offset,
                                 TABLE_UINT64, p->current_size == UINT64_MAX ? 0 : p->current_size,
                                 TABLE_UINT64, p->new_size,
-                                TABLE_STRING, size_change, TABLE_SET_COLOR, !p->partitions_next && sum_size > 0 ? ansi_underline() : NULL,
+                                TABLE_STRING, size_change, TABLE_SET_COLOR, cur_n_partition == n_partitions && sum_size > 0 ? ansi_underline() : NULL,
                                 TABLE_UINT64, p->current_padding == UINT64_MAX ? 0 : p->current_padding,
                                 TABLE_UINT64, p->new_padding,
-                                TABLE_STRING, padding_change, TABLE_SET_COLOR, !p->partitions_next && sum_padding > 0 ? ansi_underline() : NULL,
+                                TABLE_STRING, padding_change, TABLE_SET_COLOR, cur_n_partition == n_partitions && sum_padding > 0 ? ansi_underline() : NULL,
                                 TABLE_STRING, activity ?: "unchanged",
                                 TABLE_STRING, rh,
                                 TABLE_STRV, p->drop_in_files,
@@ -4720,7 +4791,7 @@ static int context_wipe_range(Context *context, uint64_t offset, uint64_t size) 
         assert(offset != UINT64_MAX);
         assert(size != UINT64_MAX);
 
-        r = DLOPEN_LIBBLKID(LOG_ERR, SD_ELF_NOTE_DLOPEN_PRIORITY_REQUIRED);
+        r = dlopen_libblkid(LOG_ERR);
         if (r < 0)
                 return r;
 
@@ -5292,6 +5363,15 @@ static int partition_target_prepare(
         return 0;
 }
 
+static void partition_target_drop_decrypted(PartitionTarget *t) {
+        assert(t);
+
+        /* Deactivate the dm-crypt device again, so that subsequent access to the target reaches the
+         * encrypted data as it is stored on disk (i.e. the ciphertext). Requires the target to have been
+         * sync'ed first. */
+        t->decrypted = decrypted_partition_target_free(t->decrypted);
+}
+
 static int partition_target_grow(PartitionTarget *t, uint64_t size) {
         int r;
 
@@ -5351,7 +5431,7 @@ static int partition_target_sync(Context *context, Partition *p, PartitionTarget
                                                "Partition %" PRIu64 "'s contents (%s) don't fit in the partition (%s).",
                                                p->partno, FORMAT_BYTES(st.st_size), FORMAT_BYTES(p->new_size));
 
-                r = copy_bytes(t->fd, whole_fd, UINT64_MAX, COPY_REFLINK|COPY_HOLES|COPY_FSYNC|COPY_SEEK0_SOURCE);
+                r = copy_bytes(t->fd, whole_fd, UINT64_MAX, COPY_HOLES|COPY_FSYNC|COPY_SEEK0_SOURCE);
                 if (r < 0)
                         return log_error_errno(r, "Failed to copy bytes to partition: %m");
         } else {
@@ -5412,7 +5492,7 @@ static int partition_encrypt(Context *context, Partition *p, PartitionTarget *ta
         assert(p);
         assert(p->encrypt != ENCRYPT_OFF);
 
-        r = DLOPEN_CRYPTSETUP(LOG_ERR, SD_ELF_NOTE_DLOPEN_PRIORITY_RECOMMENDED);
+        r = dlopen_cryptsetup(LOG_ERR);
         if (r < 0)
                 return r;
 
@@ -5697,6 +5777,7 @@ static int partition_encrypt(Context *context, Partition *p, PartitionTarget *ta
                                 pcr_values,
                                 n_pcr_values,
                                 iovec_is_set(&pubkey) ? &public : NULL,
+                                iovec_is_set(&pubkey) ? arg_tpm2_public_key_policyref : NULL,
                                 /* use_pin= */ false,
                                 arg_tpm2_pcrlock && !iovec_is_set(&pubkey) ? &pcrlock_policy : NULL,
                                 policy_hash + 0);
@@ -5708,6 +5789,7 @@ static int partition_encrypt(Context *context, Partition *p, PartitionTarget *ta
                                         pcr_values,
                                         n_pcr_values,
                                         /* public= */ NULL,      /* Turn this one off for the 2nd shard */
+                                        /* pubkey_policy_ref= */ NULL,
                                         /* use_pin= */ false,
                                         &pcrlock_policy,         /* But turn this one on */
                                         policy_hash + 1);
@@ -5784,6 +5866,7 @@ static int partition_encrypt(Context *context, Partition *p, PartitionTarget *ta
                                 hash_pcr_mask,
                                 hash_pcr_bank,
                                 &pubkey,
+                                arg_tpm2_public_key_policyref,
                                 arg_tpm2_public_key_pcr_mask,
                                 /* primary_alg= */ 0,
                                 blobs,
@@ -5794,6 +5877,7 @@ static int partition_encrypt(Context *context, Partition *p, PartitionTarget *ta
                                 &srk,
                                 &pcrlock_policy.nv_handle,
                                 flags,
+                                &(Argon2IdParameters) {},
                                 &v);
                 if (r < 0)
                         return log_error_errno(r, "Failed to prepare TPM2 JSON token object: %m");
@@ -5951,9 +6035,12 @@ static int partition_format_verity_hash(
 
         (void) partition_hint(p, node, &hint);
 
-        r = DLOPEN_CRYPTSETUP(LOG_ERR, SD_ELF_NOTE_DLOPEN_PRIORITY_RECOMMENDED);
+        r = dlopen_cryptsetup(LOG_ERR);
         if (r < 0)
                 return r;
+
+        if (p->partno != UINT64_MAX)
+                log_info("Calculating Verity protection data for future partition %" PRIu64 "...", p->partno);
 
         if (!node) {
                 r = partition_target_prepare(context, p, p->new_size, /* need_path= */ true, &t);
@@ -6053,7 +6140,7 @@ static int sign_verity_roothash(
         assert(iovec_is_set(roothash));
         assert(ret_signature);
 
-        r = DLOPEN_LIBCRYPTO(LOG_ERR, SD_ELF_NOTE_DLOPEN_PRIORITY_RECOMMENDED);
+        r = dlopen_libcrypto(LOG_ERR);
         if (r < 0)
                 return r;
 
@@ -6067,13 +6154,11 @@ static int sign_verity_roothash(
 
         p7 = sym_PKCS7_sign(context->certificate, context->private_key, NULL, rb, PKCS7_DETACHED|PKCS7_NOATTR|PKCS7_BINARY);
         if (!p7)
-                return log_error_errno(SYNTHETIC_ERRNO(EIO), "Failed to calculate PKCS7 signature: %s",
-                                       sym_ERR_error_string(sym_ERR_get_error(), NULL));
+                return log_openssl_errors(LOG_ERR, "Failed to calculate PKCS7 signature");
 
         sigsz = sym_i2d_PKCS7(p7, &sig);
         if (sigsz < 0)
-                return log_error_errno(SYNTHETIC_ERRNO(EIO), "Failed to convert PKCS7 signature to DER: %s",
-                                       sym_ERR_error_string(sym_ERR_get_error(), NULL));
+                return log_openssl_errors(LOG_ERR, "Failed to convert PKCS7 signature to DER");
 
         *ret_signature = IOVEC_MAKE(TAKE_PTR(sig), sigsz);
 
@@ -6338,7 +6423,21 @@ static int context_copy_blocks(Context *context) {
                                 return log_error_errno(errno, "Failed to seek to copy blocks offset in %s: %m", p->copy_blocks_path);
                 }
 
-                r = copy_bytes_full(p->copy_blocks_fd, partition_target_fd(t), p->copy_blocks_size, COPY_REFLINK, /* ret_remains= */ NULL, /* ret_remains_size= */ NULL, progress_bytes, p);
+                /* We call copy_bytes_full() instead of copy_file_range() directly, because copy_file_range()
+                 * needs to be called with a size limit to allow for progress updates. But we don't want that
+                 * for cloning, we want one big massive reflink if possible, and unfortunately we can't know
+                 * if copy_file_range() will do reflink or not, so we can't call it without the size limit.
+                 * Hence, call copy_bytes_full(), which tries FICLONE/BTRFS_IOC_CLONE first to do one big
+                 * clone, and then falls back to copying in chunks. */
+                r = copy_bytes_full(
+                                p->copy_blocks_fd,
+                                partition_target_fd(t),
+                                p->copy_blocks_size,
+                                /* copy_flags= */ 0,
+                                /* ret_remains= */ NULL,
+                                /* ret_remains_size= */ NULL,
+                                progress_bytes,
+                                p);
                 clear_progress_bar(/* prefix= */ NULL);
                 if (r < 0)
                         return log_error_errno(r, "Failed to copy in data from '%s': %m", p->copy_blocks_path);
@@ -6364,6 +6463,11 @@ static int context_copy_blocks(Context *context) {
                                  p->partno, FORMAT_TIMESPAN(time_spent, 0));
 
                 if (p->siblings[VERITY_HASH] && !partition_defer(context, p->siblings[VERITY_HASH])) {
+                        /* The verity hash must cover the partition contents as stored on disk, i.e. the
+                         * ciphertext if the partition is encrypted, hence tear down the dm-crypt device
+                         * first. */
+                        partition_target_drop_decrypted(t);
+
                         r = partition_format_verity_hash(context, p->siblings[VERITY_HASH],
                                                          /* node= */ NULL, partition_target_path(t));
                         if (r < 0)
@@ -6422,12 +6526,13 @@ static int shallow_join_strv(char ***ret, char **a, char **b) {
 
         STRV_FOREACH(i, a)
                 *(iter++) = *i;
+        *iter = NULL;
 
         STRV_FOREACH(i, b)
-                if (!strv_contains(joined, *i))
+                if (!strv_contains(joined, *i)) {
                         *(iter++) = *i;
-
-        *iter = NULL;
+                        *iter = NULL;
+                }
 
         *ret = TAKE_PTR(joined);
         return 0;
@@ -6461,15 +6566,15 @@ static int make_copy_files_denylist(
 
         /* Add the user configured excludes. */
 
-        if (p->suppressing) {
+        if (p->suppressing_supplement) {
                 r = shallow_join_strv(&override_exclude_src,
                                       p->exclude_files_source,
-                                      p->suppressing->exclude_files_source);
+                                      p->supplemented_by->exclude_files_source);
                 if (r < 0)
                         return r;
                 r = shallow_join_strv(&override_exclude_tgt,
                                       p->exclude_files_target,
-                                      p->suppressing->exclude_files_target);
+                                      p->supplemented_by->exclude_files_target);
                 if (r < 0)
                         return r;
         }
@@ -6601,14 +6706,14 @@ static int make_subvolumes_hashmap(const Partition *p, Hashmap **ret) {
                 TAKE_PTR(path);
         }
 
-        if (p->suppressing) {
-                Hashmap *suppressing;
+        if (p->suppressing_supplement) {
+                Hashmap *supplemented_by;
 
-                r = make_subvolumes_hashmap(p->suppressing, &suppressing);
+                r = make_subvolumes_hashmap(p->supplemented_by, &supplemented_by);
                 if (r < 0)
                         return r;
 
-                r = hashmap_merge(hashmap, suppressing);
+                r = hashmap_merge(hashmap, supplemented_by);
                 if (r < 0)
                         return log_oom();
         }
@@ -6647,14 +6752,14 @@ static int make_subvolumes_by_source_inode_hashmap(
                         return r;
         }
 
-        if (p->suppressing) {
-                Hashmap *suppressing;
+        if (p->suppressing_supplement) {
+                Hashmap *supplemented_by;
 
-                r = make_subvolumes_by_source_inode_hashmap(p->suppressing, source, target, &suppressing);
+                r = make_subvolumes_by_source_inode_hashmap(p->supplemented_by, source, target, &supplemented_by);
                 if (r < 0)
                         return r;
 
-                r = hashmap_merge(hashmap, suppressing);
+                r = hashmap_merge(hashmap, supplemented_by);
                 if (r < 0)
                         return log_oom();
         }
@@ -6702,6 +6807,17 @@ static int file_is_denylisted(const char *source, Hashmap *denylist) {
         return 0;
 }
 
+/* Adding an entry to a directory bumps its mtime. Clamp it back to ts. */
+static int clamp_directory_mtime(int dir_fd, usec_t ts) {
+        assert(dir_fd >= 0);
+
+        if (ts == USEC_INFINITY)
+                return 0;
+
+        /* chase() hands out O_PATH descriptors. */
+        return futimens_opath(dir_fd, (const struct timespec[2]) { TIMESPEC_OMIT, *TIMESPEC_STORE(ts) });
+}
+
 static int do_copy_files(Context *context, Partition *p, const char *root) {
         _cleanup_hashmap_free_ Hashmap *subvolumes = NULL;
         int r;
@@ -6718,13 +6834,14 @@ static int do_copy_files(Context *context, Partition *p, const char *root) {
                 return log_oom();
 
         size_t n_copy_files = p->n_copy_files;
-        if (p->suppressing) {
+        if (p->suppressing_supplement) {
                 if (!GREEDY_REALLOC_APPEND(copy_files, n_copy_files,
-                                           p->suppressing->copy_files, p->suppressing->n_copy_files))
+                                           p->supplemented_by->copy_files, p->supplemented_by->n_copy_files))
                         return log_oom();
         }
 
         bool copy_ownership = fstype_can_ownership(p->format);
+        usec_t ts = parse_source_date_epoch();
 
         /* copy_tree_at() automatically copies the permissions of source directories to target directories if
          * it created them. However, the root directory is created by us, so we have to manually take care
@@ -6749,7 +6866,7 @@ static int do_copy_files(Context *context, Partition *p, const char *root) {
                 (void) copy_xattr(sfd, NULL, rfd, NULL, COPY_ALL_XATTRS);
                 if (copy_ownership)
                         (void) copy_access(sfd, rfd);
-                (void) copy_times(sfd, rfd, 0);
+                (void) copy_times_full(sfd, rfd, /* flags= */ 0, ts);
 
                 break;
         }
@@ -6761,7 +6878,6 @@ static int do_copy_files(Context *context, Partition *p, const char *root) {
                 _cleanup_hashmap_free_ Hashmap *denylist = NULL;
                 _cleanup_hashmap_free_ Hashmap *subvolumes_by_source_inode = NULL;
                 _cleanup_close_ int sfd = -EBADF, pfd = -EBADF, tfd = -EBADF;
-                usec_t ts = parse_source_date_epoch();
 
                 r = make_copy_files_denylist(context, p, line->source, line->target, &denylist);
                 if (r < 0)
@@ -6810,19 +6926,35 @@ static int do_copy_files(Context *context, Partition *p, const char *root) {
                                 if (pfd < 0)
                                         return log_error_errno(pfd, "Failed to open parent directory of target: %m");
 
-                                r = copy_tree_at(
+                                r = copy_tree_at_full(
                                                 sfd, ".",
                                                 pfd, fn,
                                                 uid, gid,
                                                 line->flags,
-                                                denylist, subvolumes_by_source_inode);
+                                                ts,
+                                                denylist, subvolumes_by_source_inode,
+                                                /* progress_path= */ NULL,
+                                                /* progress_bytes= */ NULL,
+                                                /* userdata= */ NULL);
+                                if (r >= 0) {
+                                        /* Creating the target bumped the parent directory's mtime,
+                                         * just like in the regular file case below. */
+                                        r = clamp_directory_mtime(pfd, ts);
+                                        if (r < 0)
+                                                return log_error_errno(
+                                                        r, "Failed to set timestamp of '%s': %m", dn);
+                                }
                         } else
-                                r = copy_tree_at(
+                                r = copy_tree_at_full(
                                                 sfd, ".",
                                                 tfd, ".",
                                                 uid, gid,
                                                 line->flags,
-                                                denylist, subvolumes_by_source_inode);
+                                                ts,
+                                                denylist, subvolumes_by_source_inode,
+                                                /* progress_path= */ NULL,
+                                                /* progress_bytes= */ NULL,
+                                                /* userdata= */ NULL);
                         if (r < 0)
                                 return log_error_errno(r, "Failed to copy '%s%s' to '%s%s': %m",
                                                        strempty(arg_copy_source), line->source, strempty(root), line->target);
@@ -6862,22 +6994,19 @@ static int do_copy_files(Context *context, Partition *p, const char *root) {
                         if (tfd < 0)
                                 return log_error_errno(errno, "Failed to create target file '%s': %m", line->target);
 
-                        r = copy_bytes(sfd, tfd, UINT64_MAX, COPY_REFLINK|COPY_HOLES|COPY_SIGINT|COPY_TRUNCATE);
+                        r = copy_bytes(sfd, tfd, UINT64_MAX, COPY_HOLES|COPY_SIGINT|COPY_TRUNCATE);
                         if (r < 0)
                                 return log_error_errno(r, "Failed to copy '%s' to '%s%s': %m", line->source, strempty(arg_copy_source), line->target);
 
                         (void) copy_xattr(sfd, NULL, tfd, NULL, COPY_ALL_XATTRS);
                         if (copy_ownership)
                                 (void) copy_access(sfd, tfd);
-                        (void) copy_times(sfd, tfd, 0);
+                        (void) copy_times_full(sfd, tfd, /* flags= */ 0, ts);
 
-                        if (ts != USEC_INFINITY) {
-                                struct timespec tspec;
-                                timespec_store(&tspec, ts);
-
-                                if (futimens(pfd, (const struct timespec[2]) { TIMESPEC_OMIT, tspec }) < 0)
-                                        return -errno;
-                        }
+                        /* Creating the file bumped the parent directory's mtime. */
+                        r = clamp_directory_mtime(pfd, ts);
+                        if (r < 0)
+                                return log_error_errno(r, "Failed to set timestamp of '%s': %m", dn);
                 }
         }
 
@@ -6896,8 +7025,8 @@ static int do_make_directories(Partition *p, const char *root) {
         if (r < 0)
                 return r;
 
-        if (p->suppressing) {
-                r = shallow_join_strv(&override_dirs, p->make_directories, p->suppressing->make_directories);
+        if (p->suppressing_supplement) {
+                r = shallow_join_strv(&override_dirs, p->make_directories, p->supplemented_by->make_directories);
                 if (r < 0)
                         return r;
         }
@@ -6912,6 +7041,7 @@ static int do_make_directories(Partition *p, const char *root) {
 }
 
 static int do_make_symlinks(Partition *p, const char *root) {
+        usec_t ts = parse_source_date_epoch();
         int r;
 
         assert(p);
@@ -6927,6 +7057,18 @@ static int do_make_symlinks(Partition *p, const char *root) {
 
                 if (symlinkat(*target, parent_fd, f) < 0)
                         return log_error_errno(errno, "Failed to create symlink at %s to %s: %m", *path, *target);
+
+                /* The new symlink carries the wall clock, and creating it bumped the directory we put
+                 * it into. We are the last population step, so nothing overwrites this again. */
+                if (ts != USEC_INFINITY &&
+                    utimensat(parent_fd, f,
+                              (const struct timespec[2]) { *TIMESPEC_STORE(ts), *TIMESPEC_STORE(ts) },
+                              AT_SYMLINK_NOFOLLOW) < 0)
+                        return log_error_errno(errno, "Failed to set timestamp of symlink '%s': %m", *path);
+
+                r = clamp_directory_mtime(parent_fd, ts);
+                if (r < 0)
+                        return log_error_errno(r, "Failed to set timestamp of '%s': %m", *path);
         }
 
         return 0;
@@ -6950,8 +7092,8 @@ static int make_subvolumes_read_only(Partition *p, const char *root) {
                         return log_error_errno(r, "Failed to make subvolume '%s' read-only: %m", subvolume->path);
         }
 
-        if (p->suppressing) {
-                r = make_subvolumes_read_only(p->suppressing, root);
+        if (p->suppressing_supplement) {
+                r = make_subvolumes_read_only(p->supplemented_by, root);
                 if (r < 0)
                         return r;
         }
@@ -7113,6 +7255,21 @@ static int partition_populate_directory(Context *context, Partition *p, char **r
         if (r < 0)
                 return log_error_errno(errno, "Failed to create temporary directory: %m");
 
+        /* Nothing below touches its atime (adding an entry to a directory only moves mtime), so stamp here. */
+        usec_t ts = parse_source_date_epoch();
+        if (ts != USEC_INFINITY) {
+                _cleanup_close_ int rfd = -EBADF;
+                struct timespec tspec;
+
+                rfd = open(root, O_DIRECTORY|O_CLOEXEC|O_NOFOLLOW);
+                if (rfd < 0)
+                        return log_error_errno(errno, "Failed to open temporary directory: %m");
+
+                timespec_store(&tspec, ts);
+                if (futimens(rfd, (const struct timespec[2]) { tspec, tspec }) < 0)
+                        return log_error_errno(errno, "Failed to set timestamp of temporary directory: %m");
+        }
+
         r = do_copy_files(context, p, root);
         if (r < 0)
                 return r;
@@ -7147,7 +7304,7 @@ static int partition_populate_filesystem(Context *context, Partition *p, const c
          * appear in the host namespace. Hence we fork a child that has its own file system namespace and
          * detached mount propagation. */
 
-        (void) DLOPEN_LIBMOUNT(LOG_DEBUG, SD_ELF_NOTE_DLOPEN_PRIORITY_REQUIRED);
+        (void) dlopen_libmount(LOG_DEBUG);
 
         r = pidref_safe_fork(
                         "(sd-copy)",
@@ -7269,12 +7426,12 @@ static int finalize_extra_mkfs_options(const Partition *p, const char *root, cha
                 if (r < 0)
                         return r;
 
-                if (p->suppressing) {
-                        r = append_btrfs_subvols(&sv, p->suppressing->subvolumes, NULL);
+                if (p->suppressing_supplement) {
+                        r = append_btrfs_subvols(&sv, p->supplemented_by->subvolumes, NULL);
                         if (r < 0)
                                 return r;
 
-                        r = append_btrfs_inode_flags(&sv, p->suppressing->subvolumes);
+                        r = append_btrfs_inode_flags(&sv, p->supplemented_by->subvolumes);
                         if (r < 0)
                                 return r;
                 }
@@ -7553,6 +7710,11 @@ static int context_mkfs(Context *context) {
                         return r;
 
                 if (p->siblings[VERITY_HASH] && !partition_defer(context, p->siblings[VERITY_HASH])) {
+                        /* The verity hash must cover the partition contents as stored on disk, i.e. the
+                         * ciphertext if the partition is encrypted, hence tear down the dm-crypt device
+                         * first. */
+                        partition_target_drop_decrypted(t);
+
                         r = partition_format_verity_hash(context, p->siblings[VERITY_HASH],
                                                          /* node= */ NULL, partition_target_path(t));
                         if (r < 0)
@@ -8135,7 +8297,7 @@ static int context_split(Context *context) {
                         if (r < 0)
                                 return log_error_errno(r, "Failed to write to split partition %s: %m", p->split_path);
                 } else {
-                        r = copy_bytes(fd, fdt, p->new_size, COPY_REFLINK|COPY_HOLES|COPY_TRUNCATE);
+                        r = copy_bytes(fd, fdt, p->new_size, COPY_HOLES|COPY_TRUNCATE);
                         if (r < 0)
                                 return log_error_errno(r, "Failed to copy to split partition %s: %m", p->split_path);
                 }
@@ -8778,7 +8940,7 @@ static int resolve_copy_blocks_auto_candidate(
                 return log_error_errno(r, "Failed to open block device " DEVNUM_FORMAT_STR ": %m",
                                        DEVNUM_FORMAT_VAL(whole_devno));
 
-        r = DLOPEN_LIBBLKID(LOG_ERR, SD_ELF_NOTE_DLOPEN_PRIORITY_REQUIRED);
+        r = dlopen_libblkid(LOG_ERR);
         if (r < 0)
                 return r;
 
@@ -10091,62 +10253,6 @@ static int parse_join_signature(const char *p, Set **verity_settings_map) {
         return 0;
 }
 
-static int help(void) {
-        _cleanup_free_ char *link = NULL;
-        int r;
-
-        r = terminal_urlify_man("systemd-repart", "8", &link);
-        if (r < 0)
-                return log_oom();
-
-        static const char *const option_groups[] = {
-                "Options",
-                "Operation",
-                "Output",
-                "Factory Reset",
-                "Configuration & Image Control",
-                "Verity",
-                "Encryption",
-                "Partition Control",
-                "Copying",
-                "DDI Profile",
-                "Auxiliary Resource Generation",
-                "El Torito boot catalog",
-        };
-
-        Table *option_tables[ELEMENTSOF(option_groups)] = {};
-        CLEANUP_ELEMENTS(option_tables, table_unref_array_clear);
-
-        for (size_t i = 0; i < ELEMENTSOF(option_groups); i++) {
-                r = option_parser_get_help_table_group(option_groups[i], &option_tables[i]);
-                if (r < 0)
-                        return r;
-        }
-
-        (void) table_sync_column_widths(0,
-                                        option_tables[0], option_tables[1], option_tables[2],
-                                        option_tables[3], option_tables[4], option_tables[5],
-                                        option_tables[6], option_tables[7], option_tables[8],
-                                        option_tables[9], option_tables[10], option_tables[11]);
-
-        printf("%s [OPTIONS...] [DEVICE]\n"
-               "\n%sGrow and add partitions to a partition table, and generate disk images (DDIs).%s\n",
-               program_invocation_short_name,
-               ansi_highlight(),
-               ansi_normal());
-
-        for (size_t i = 0; i < ELEMENTSOF(option_groups); i++) {
-                printf("\n%s%s:%s\n", ansi_underline(), option_groups[i], ansi_normal());
-
-                r = table_print_or_warn(option_tables[i]);
-                if (r < 0)
-                        return r;
-        }
-
-        printf("\nSee the %s for details.\n", link);
-        return 0;
-}
-
 static int parse_argv(int argc, char *argv[]) {
         assert(argc >= 0);
         assert(argv);
@@ -10161,7 +10267,7 @@ static int parse_argv(int argc, char *argv[]) {
                 OPTION_GROUP("Options"): {}
 
                 OPTION_COMMON_HELP:
-                        return help();
+                        return command_print_help();
 
                 OPTION_COMMON_VERSION:
                         return version();
@@ -10175,6 +10281,10 @@ static int parse_argv(int argc, char *argv[]) {
                         break;
 
                 OPTION_GROUP("Operation"): {}
+
+                OPTION_SHORT('n', NULL, "Run dry-run operation"):
+                        arg_dry_run = true;
+                        break;
 
                 OPTION_LONG("dry-run", "BOOL",
                             "Whether to run dry-run operation"):
@@ -10206,6 +10316,13 @@ static int parse_argv(int argc, char *argv[]) {
                 OPTION_LONG("discard", "BOOL",
                             "Whether to discard backing blocks for new partitions"):
                         r = parse_boolean_argument("--discard=", opts.arg, &arg_discard);
+                        if (r < 0)
+                                return r;
+                        break;
+
+                OPTION_LONG("cow", "BOOL|auto",
+                            "Whether to enable copy-on-write for newly created image files"):
+                        r = parse_tristate_argument_with_auto("--cow=", opts.arg, &arg_cow);
                         if (r < 0)
                                 return r;
                         break;
@@ -10475,6 +10592,13 @@ static int parse_argv(int argc, char *argv[]) {
 
                         break;
 
+                OPTION_LONG("tpm2-public-key-policyref", "STRING",
+                            "Enroll signed TPM2 PCR policy with the specified policy reference"):
+                        r = free_and_strdup_warn(&arg_tpm2_public_key_policyref, opts.arg);
+                        if (r < 0)
+                                return r;
+                        break;
+
                 OPTION_LONG("tpm2-public-key-pcrs", "PCR1+PCR2+…",
                             "Enroll signed TPM2 PCR policy for specified TPM2 PCRs"):
                         auto_public_key_pcr_mask = false;
@@ -10671,6 +10795,9 @@ static int parse_argv(int argc, char *argv[]) {
                                 return r;
 
                         break;
+
+                OPTION_COMMON_INTROSPECT_CLI:
+                        return introspect_cli(arg_json_format_flags);
                 }
 
         if (option_parser_get_n_args(&opts) > 1)
@@ -10834,54 +10961,6 @@ static int parse_proc_cmdline_factory_reset(void) {
         return 0;
 }
 
-static int parse_efi_variable_factory_reset(void) {
-        _cleanup_free_ char *value = NULL;
-        int r;
-
-        /* NB: This is legacy, people should move to the newer FactoryResetRequest variable! */
-
-        // FIXME: Remove this in v260
-
-        if (arg_factory_reset >= 0) /* Never override what is specified on the process command line */
-                return 0;
-
-        if (!in_initrd()) /* Never honour EFI variable factory reset request outside of the initrd */
-                return 0;
-
-        r = efi_get_variable_string(EFI_SYSTEMD_VARIABLE_STR("FactoryReset"), &value);
-        if (r == -ENOENT || ERRNO_IS_NEG_NOT_SUPPORTED(r))
-                return 0;
-        if (r < 0)
-                return log_error_errno(r, "Failed to read EFI variable FactoryReset: %m");
-
-        log_warning("Warning, EFI variable FactoryReset is in use, please migrate to use FactoryResetRequest instead, support will be removed in v260!");
-
-        r = parse_boolean(value);
-        if (r < 0)
-                return log_error_errno(r, "Failed to parse EFI variable FactoryReset: %m");
-
-        arg_factory_reset = r;
-        if (r)
-                log_notice("Factory reset requested via EFI variable FactoryReset.");
-
-        return 0;
-}
-
-static int remove_efi_variable_factory_reset(void) {
-        int r;
-
-        // FIXME: Remove this in v260, see above
-
-        r = efi_set_variable(EFI_SYSTEMD_VARIABLE_STR("FactoryReset"), NULL, 0);
-        if (r == -ENOENT || ERRNO_IS_NEG_NOT_SUPPORTED(r))
-                return 0;
-        if (r < 0)
-                return log_error_errno(r, "Failed to remove EFI variable FactoryReset: %m");
-
-        log_info("Successfully unset EFI variable FactoryReset.");
-        return 0;
-}
-
 static int acquire_root_devno(
                 const char *p,
                 const char *root,
@@ -10989,7 +11068,12 @@ static int find_root(Context *context) {
                         if (!s)
                                 return log_oom();
 
-                        fd = xopenat_full(AT_FDCWD, arg_node, open_flags|O_CREAT|O_EXCL|O_NOFOLLOW, XO_NOCOW, 0666);
+                        fd = xopenat_full(
+                                        AT_FDCWD,
+                                        arg_node,
+                                        open_flags|O_CREAT|O_EXCL|O_NOFOLLOW,
+                                        arg_cow < 0 ? 0 : (arg_cow > 0 ? XO_COW : XO_NOCOW),
+                                        0666);
                         if (fd < 0)
                                 return log_error_errno(fd, "Failed to create '%s': %m", arg_node);
 
@@ -11281,6 +11365,57 @@ static int determine_auto_size(
         return 0;
 }
 
+static void context_sort_partitions(Context *context) {
+        assert(context);
+
+        Partition *p;
+        LIST_HEAD(Partition, new_partitions) = NULL;
+        LIST_HEAD(Partition, existing_partitions) = NULL;
+        LIST_HEAD(Partition, dropped_partitions) = NULL;
+
+        while ((p = LIST_POP(partitions, context->partitions))) {
+                if (p->allocated_to_area)
+                        LIST_APPEND(partitions, new_partitions, p);
+                else if (p->dropped)
+                        LIST_APPEND(partitions, dropped_partitions, p);
+                else
+                        LIST_APPEND(partitions, existing_partitions, p);
+        }
+
+        /* First sort existing partitions by their offset */
+        while ((p = LIST_POP(partitions, existing_partitions))) {
+                Partition *cursor = NULL;
+
+                assert(p->offset != UINT64_MAX);
+
+                LIST_FOREACH(partitions, q, context->partitions)
+                        if (p->offset > q->offset)
+                                cursor = q;
+
+                LIST_INSERT_AFTER(partitions, context->partitions, cursor, p);
+        }
+
+        /* Then insert the partitions we'll newly create in the free areas */
+        while ((p = LIST_POP(partitions, new_partitions))) {
+                FreeArea *a = p->allocated_to_area;
+                Partition *cursor = a->after;
+
+                /* Advance past partitions of this area that we already inserted */
+                LIST_FOREACH(partitions, q, context->partitions)
+                        if (q->allocated_to_area == a)
+                                cursor = q;
+
+                LIST_INSERT_AFTER(partitions, context->partitions, cursor, p);
+        }
+
+        /* Finally append any dropped partitions to the end of the list */
+        while ((p = LIST_POP(partitions, dropped_partitions))) {
+                assert(p->offset == UINT64_MAX);
+
+                LIST_APPEND(partitions, context->partitions, p);
+        }
+}
+
 static int context_ponder(Context *context) {
         int r;
 
@@ -11328,6 +11463,10 @@ static int context_ponder(Context *context) {
                                  p->definition_path, p->supplement_for->definition_path);
         }
 
+        /* Now that we know which new partition goes into which free area, reorder
+         * the partitions list so that the list is in the right order. */
+        context_sort_partitions(context);
+
         /* Now assign free space according to the weight logic */
         r = context_grow_partitions(context);
         if (r < 0)
@@ -11335,69 +11474,6 @@ static int context_ponder(Context *context) {
 
         /* Now calculate where each new partition gets placed */
         context_place_partitions(context);
-
-        return 0;
-}
-
-static int vl_method_list_candidate_devices(
-                sd_varlink *link,
-                sd_json_variant *parameters,
-                sd_varlink_method_flags_t flags,
-                void *userdata) {
-
-        struct {
-                bool ignore_root;
-                bool ignore_empty;
-        } p = {};
-
-        static const sd_json_dispatch_field dispatch_table[] = {
-                { "ignoreRoot",  SD_JSON_VARIANT_BOOLEAN, sd_json_dispatch_stdbool, voffsetof(p, ignore_root),  0 },
-                { "ignoreEmpty", SD_JSON_VARIANT_BOOLEAN, sd_json_dispatch_stdbool, voffsetof(p, ignore_empty), 0 },
-                {}
-        };
-
-        int r;
-
-        assert(link);
-        assert(FLAGS_SET(flags, SD_VARLINK_METHOD_MORE));
-
-        r = sd_varlink_dispatch(link, parameters, dispatch_table, &p);
-        if (r != 0)
-                return r;
-
-        BlockDevice *l = NULL;
-        size_t n = 0;
-        CLEANUP_ARRAY(l, n, block_device_array_free);
-
-        r = blockdev_list(
-                        BLOCKDEV_LIST_SHOW_SYMLINKS|
-                        BLOCKDEV_LIST_REQUIRE_PARTITION_SCANNING|
-                        BLOCKDEV_LIST_IGNORE_ZRAM|
-                        BLOCKDEV_LIST_METADATA|
-                        BLOCKDEV_LIST_IGNORE_READ_ONLY|
-                        (p.ignore_empty ? BLOCKDEV_LIST_IGNORE_EMPTY : 0)|
-                        (p.ignore_root ? BLOCKDEV_LIST_IGNORE_ROOT : 0),
-                        &l,
-                        &n);
-        if (r < 0)
-                return r;
-
-        r = sd_varlink_set_sentinel(link, "io.systemd.Repart.NoCandidateDevices");
-        if (r < 0)
-                return r;
-
-        FOREACH_ARRAY(d, l, n) {
-                r = sd_varlink_replybo(link,
-                                SD_JSON_BUILD_PAIR_STRING("node", d->node),
-                                JSON_BUILD_PAIR_STRV_NON_EMPTY("symlinks", d->symlinks),
-                                JSON_BUILD_PAIR_UNSIGNED_NOT_EQUAL("diskseq", d->diskseq, UINT64_MAX),
-                                JSON_BUILD_PAIR_UNSIGNED_NOT_EQUAL("sizeBytes", d->size, UINT64_MAX),
-                                JSON_BUILD_PAIR_STRING_NON_EMPTY("model", d->model),
-                                JSON_BUILD_PAIR_STRING_NON_EMPTY("vendor", d->vendor),
-                                JSON_BUILD_PAIR_STRING_NON_EMPTY("subsystem", d->subsystem));
-                if (r < 0)
-                        return r;
-        }
 
         return 0;
 }
@@ -11566,10 +11642,21 @@ static int vl_method_run(
                 if (r < 0)
                         return r;
 
+                bool count_partitions = IN_SET(context->empty, EMPTY_REFUSE, EMPTY_ALLOW);
+                uint64_t n_partitions = 0;
+
+                if (count_partitions)
+                        LIST_FOREACH(partitions, pp, context->partitions)
+                                n_partitions += PARTITION_EXISTS(pp);
+
+                /* In 'force' and 'require' modes the existing partition table is not read, hence we don't
+                 * know how many partitions the disk contains, and say nothing about it. */
                 return sd_varlink_replybo(
                                 link,
                                 SD_JSON_BUILD_PAIR_UNSIGNED("minimalSizeBytes", minimal_size),
-                                SD_JSON_BUILD_PAIR_UNSIGNED("currentSizeBytes", context->total));
+                                SD_JSON_BUILD_PAIR_UNSIGNED("currentSizeBytes", context->total),
+                                SD_JSON_BUILD_PAIR_CONDITION(count_partitions,
+                                                             "partitionCount", SD_JSON_BUILD_UNSIGNED(n_partitions)));
         }
 
         r = context_write_partition_table(context);
@@ -11622,13 +11709,21 @@ static int run(int argc, char *argv[]) {
         bool node_is_our_loop = false;
         int r;
 
+        LIBBLKID_NOTE(required);
+        LIBCRYPTO_NOTE(recommended);
+        LIBCRYPTSETUP_NOTE(recommended);
+        LIBFDISK_NOTE(required);
+        LIBMOUNT_NOTE(required);
+        LIBSELINUX_NOTE(recommended);
+        TPM2_NOTE(suggested);
+
         log_setup();
 
         r = parse_argv(argc, argv);
         if (r <= 0)
                 return r;
 
-        r = DLOPEN_FDISK(LOG_ERR, SD_ELF_NOTE_DLOPEN_PRIORITY_REQUIRED);
+        r = dlopen_fdisk(LOG_ERR);
         if (r < 0)
                 return r;
 
@@ -11636,10 +11731,6 @@ static int run(int argc, char *argv[]) {
                 return vl_server();
 
         r = parse_proc_cmdline_factory_reset();
-        if (r < 0)
-                return r;
-
-        r = parse_efi_variable_factory_reset();
         if (r < 0)
                 return r;
 
@@ -11777,11 +11868,6 @@ static int run(int argc, char *argv[]) {
         if (r < 0)
                 return r;
         if (r > 0) {
-                /* We actually did a factory reset! */
-                r = remove_efi_variable_factory_reset();
-                if (r < 0)
-                        return r;
-
                 /* Reload the reduced partition table */
                 context_unload_partition_table(context);
                 r = context_load_partition_table(context);

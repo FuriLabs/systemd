@@ -16,6 +16,7 @@
 #include "alloc-util.h"
 #include "async.h"
 #include "binfmt-util.h"
+#include "build.h"
 #include "cgroup-setup.h"
 #include "cgroup-util.h"
 #include "constants.h"
@@ -24,6 +25,7 @@
 #include "detach-loopback.h"
 #include "detach-md.h"
 #include "detach-swap.h"
+#include "dlopen-note.h"
 #include "errno-util.h"
 #include "exec-util.h"
 #include "fd-util.h"
@@ -33,6 +35,7 @@
 #include "killall.h"
 #include "log.h"
 #include "luo-util.h"
+#include "main-func.h"
 #include "options.h"
 #include "parse-util.h"
 #include "pidref.h"
@@ -47,6 +50,7 @@
 #include "terminal-util.h"
 #include "time-util.h"
 #include "umount.h"
+#include "verbs.h"
 #include "virt.h"
 #include "watchdog.h"
 
@@ -57,6 +61,13 @@
 static const char *arg_verb = NULL;
 static uint8_t arg_exit_code = 0;
 static usec_t arg_timeout = DEFAULT_TIMEOUT_USEC;
+
+COMMAND(
+        "systemd-shutdown\0",
+        "Execute the final phase of system shutdown.",
+        .argspec = "reboot|poweroff|halt|kexec|exit\0",
+        .man_pages = "systemd-shutdown(8)\0",
+);
 
 static int parse_argv(int argc, char *argv[]) {
         assert(argc >= 1);
@@ -72,6 +83,15 @@ static int parse_argv(int argc, char *argv[]) {
 
         FOREACH_OPTION_OR_RETURN(c, &opts)
                 switch (c) {
+
+                OPTION_COMMON_HELP:
+                        return command_print_help();
+
+                OPTION_COMMON_VERSION:
+                        return version();
+
+                OPTION_COMMON_INTROSPECT_CLI:
+                        return introspect_cli(SD_JSON_FORMAT_OFF);
 
                 OPTION_COMMON_LOG_LEVEL:
                         r = log_set_max_level_from_string(opts.arg);
@@ -147,7 +167,7 @@ static int parse_argv(int argc, char *argv[]) {
         if (!arg_verb)
                 return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Verb argument missing.");
 
-        return 0;
+        return 1; /* Further action */
 }
 
 static int switch_root_initramfs(void) {
@@ -365,7 +385,7 @@ static void sleep_until_minimum_uptime(void) {
         }
 }
 
-int main(int argc, char *argv[]) {
+static int run(int argc, char *argv[]) {
         static const char* const dirs[] = {
                 SYSTEM_SHUTDOWN_PATH,
                 NULL
@@ -374,8 +394,15 @@ int main(int argc, char *argv[]) {
         _cleanup_close_ int luo_session_fd = -EBADF;
         _cleanup_free_ int *luo_fds = NULL;
         _cleanup_free_ char *cgroup = NULL;
+        dual_timestamp shutdown_late_start;
         size_t n_luo_fds = 0;
         int cmd, r;
+
+        LIBMOUNT_NOTE(recommended);
+        LIBSELINUX_NOTE(recommended);
+
+        /* LUO will preserve these across kexec */
+        dual_timestamp_now(&shutdown_late_start);
 
         /* If PID 1 passed us an LUO serialization fd, parse it first so we know which fds to keep open. */
         (void) luo_parse_serialization(&luo_serialization, &luo_fds, &n_luo_fds);
@@ -394,9 +421,16 @@ int main(int argc, char *argv[]) {
         log_set_prohibit_ipc(true);
         log_parse_environment();
 
+        r = parse_argv(argc, argv);
         if (getpid_cached() != 1) {
-                log_error("Not executed by init (PID 1). Refusing to operate.");
-                return EXIT_FAILURE;
+                /* If we're a normal user space process, our work is done. Either we hit an error, or were
+                 * called with --help, --version, or another option that was handled by parse_argv(), or it
+                 * looks like we're being asked to do some real work, but we should do that only as part of
+                 * the real shutdown sequence. */
+                if (r <= 0)
+                        return r;
+                return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
+                                       "Not executed by init (PID 1). Refusing to operate.");
         }
 
         log_set_always_reopen_console(true);
@@ -406,8 +440,7 @@ int main(int argc, char *argv[]) {
          * through kernel. */
         (void) reboot(RB_ENABLE_CAD);
 
-        r = parse_argv(argc, argv);
-        if (r < 0)
+        if (r <= 0)
                 goto error;
 
         log_open();
@@ -642,6 +675,12 @@ int main(int argc, char *argv[]) {
 
         sleep_until_minimum_uptime();
 
+        /* This is conceptually where shutdown is complete and only the final syscall to bring the machine
+         * down is left, so record the late shutdown timestamp here. */
+        dual_timestamp shutdown_late_finish;
+        dual_timestamp_now(&shutdown_late_finish);
+        (void) luo_serialization_add_shutdown_timestamps(&luo_serialization, &shutdown_late_start, &shutdown_late_finish);
+
         if (streq(arg_verb, "exit")) {
                 if (in_container) {
                         log_info("Exiting container.");
@@ -654,7 +693,6 @@ int main(int argc, char *argv[]) {
         switch (cmd) {
 
         case LINUX_REBOOT_CMD_KEXEC:
-
                 if (!in_container) {
                         /* Preserve fd stores via the kernel Live Update Orchestrator before kexec.
                          * The session fd must stay open until the kexec syscall. */
@@ -692,14 +730,21 @@ int main(int argc, char *argv[]) {
                 /* If we are in a container, and we lacked CAP_SYS_BOOT just exit, this will kill our
                  * container for good. */
                 log_info("Exiting container.");
-                return EXIT_SUCCESS;
+                return 0;
         }
 
         r = log_error_errno(errno, "Failed to invoke reboot(): %m");
 
 error:
-        log_struct_errno(LOG_EMERG, r,
-                         LOG_MESSAGE("Critical error while doing system shutdown: %m"),
-                         LOG_MESSAGE_ID(SD_MESSAGE_SHUTDOWN_ERROR_STR));
+        if (r == 0)
+                log_struct(LOG_EMERG,
+                           LOG_MESSAGE("Non-shutdown operation requested, cannot operate."),
+                           LOG_MESSAGE_ID(SD_MESSAGE_SHUTDOWN_ERROR_STR));
+        else
+                log_struct_errno(LOG_EMERG, r,
+                                 LOG_MESSAGE("Critical error while doing system shutdown: %m"),
+                                 LOG_MESSAGE_ID(SD_MESSAGE_SHUTDOWN_ERROR_STR));
         freeze();
 }
+
+DEFINE_MAIN_FUNCTION_WITH_POSITIVE_FAILURE(run);

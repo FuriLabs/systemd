@@ -10,12 +10,23 @@ systemd_coredump_sources = files(
         'coredump-config.c',
         'coredump-context.c',
         'coredump-kernel-helper.c',
+        'coredump-manager.c',
         'coredump-receive.c',
         'coredump-send.c',
         'coredump-submit.c',
+        'coredump-worker.c',
 )
-systemd_coredump_extract_sources = files(
+systemd_coredump_export_sources = files(
         'coredump-vacuum.c',
+)
+coredumpctl_sources = files(
+        'coredumpctl.c',
+        'coredumpctl-core.c',
+        'coredumpctl-debugger.c',
+        'coredumpctl-info.c',
+        'coredumpctl-journal.c',
+        'coredumpctl-list.c',
+        'coredumpctl-util.c',
 )
 
 coredump_gperf_c = custom_target(
@@ -36,20 +47,23 @@ executables += [
         libexec_template + {
                 'name' : 'systemd-coredump',
                 'sources' : systemd_coredump_sources,
-                'extract' : systemd_coredump_extract_sources,
+                'export' : systemd_coredump_export_sources,
                 'link_with' : [libshared],
-                'dependencies' : common_dependencies,
+                'dependencies' : [
+                        common_dependencies,
+                        libacl_cflags,
+                ],
         },
         executable_template + {
                 'name' : 'coredumpctl',
                 'public' : true,
-                'sources' : files('coredumpctl.c'),
+                'sources' : coredumpctl_sources,
                 'link_with' : [libshared],
                 'dependencies' : common_dependencies,
         },
         test_template + {
                 'sources' : files('test-coredump-vacuum.c'),
-                'objects' : ['systemd-coredump'],
+                'import' : ['systemd-coredump'],
                 'type' : 'manual',
         },
 ]

@@ -6,6 +6,7 @@
 #include "bus-common-errors.h"
 #include "bus-locator.h"
 #include "bus-util.h"
+#include "dlopen-note.h"
 #include "fd-util.h"
 #include "home-util.h"
 #include "locale-util.h"
@@ -786,11 +787,10 @@ _public_ PAM_EXTERN int pam_sm_authenticate(
         bool debug = false;
         int r;
 
-        r = DLOPEN_LIBPAM(LOG_DEBUG, SD_ELF_NOTE_DLOPEN_PRIORITY_REQUIRED);
+        LIBPAM_NOTE(required);
+        r = dlopen_libpam(LOG_DEBUG);
         if (r < 0)
                 return PAM_SERVICE_ERR;
-
-        (void) DLOPEN_LIBINTL(LOG_DEBUG, SD_ELF_NOTE_DLOPEN_PRIORITY_RECOMMENDED); /* best-effort: messages won't be translated if this fails */
 
         pam_log_setup();
 
@@ -853,11 +853,9 @@ _public_ PAM_EXTERN int pam_sm_open_session(
         bool debug = false;
         int r;
 
-        r = DLOPEN_LIBPAM(LOG_DEBUG, SD_ELF_NOTE_DLOPEN_PRIORITY_REQUIRED);
+        r = dlopen_libpam(LOG_DEBUG);
         if (r < 0)
                 return PAM_SERVICE_ERR;
-
-        (void) DLOPEN_LIBINTL(LOG_DEBUG, SD_ELF_NOTE_DLOPEN_PRIORITY_RECOMMENDED); /* best-effort: messages won't be translated if this fails */
 
         pam_log_setup();
 
@@ -912,11 +910,9 @@ _public_ PAM_EXTERN int pam_sm_close_session(
         bool debug = false;
         int r;
 
-        r = DLOPEN_LIBPAM(LOG_DEBUG, SD_ELF_NOTE_DLOPEN_PRIORITY_REQUIRED);
+        r = dlopen_libpam(LOG_DEBUG);
         if (r < 0)
                 return PAM_SERVICE_ERR;
-
-        (void) DLOPEN_LIBINTL(LOG_DEBUG, SD_ELF_NOTE_DLOPEN_PRIORITY_RECOMMENDED); /* best-effort: messages won't be translated if this fails */
 
         pam_log_setup();
 
@@ -979,11 +975,9 @@ _public_ PAM_EXTERN int pam_sm_acct_mgmt(
         usec_t t;
         int r;
 
-        r = DLOPEN_LIBPAM(LOG_DEBUG, SD_ELF_NOTE_DLOPEN_PRIORITY_REQUIRED);
+        r = dlopen_libpam(LOG_DEBUG);
         if (r < 0)
                 return PAM_SERVICE_ERR;
-
-        (void) DLOPEN_LIBINTL(LOG_DEBUG, SD_ELF_NOTE_DLOPEN_PRIORITY_RECOMMENDED); /* best-effort: messages won't be translated if this fails */
 
         pam_log_setup();
 
@@ -1100,11 +1094,9 @@ _public_ PAM_EXTERN int pam_sm_chauthtok(
         bool debug = false;
         int r;
 
-        r = DLOPEN_LIBPAM(LOG_DEBUG, SD_ELF_NOTE_DLOPEN_PRIORITY_REQUIRED);
+        r = dlopen_libpam(LOG_DEBUG);
         if (r < 0)
                 return PAM_SERVICE_ERR;
-
-        (void) DLOPEN_LIBINTL(LOG_DEBUG, SD_ELF_NOTE_DLOPEN_PRIORITY_RECOMMENDED); /* best-effort: messages won't be translated if this fails */
 
         pam_log_setup();
 

@@ -64,12 +64,6 @@ const char* const systemd_features =
 
         /* cryptographic libraries */
 
-#if HAVE_GCRYPT
-        " +GCRYPT"
-#else
-        " -GCRYPT"
-#endif
-
 #if HAVE_GNUTLS
         " +GNUTLS"
 #else
@@ -284,5 +278,11 @@ int version(void) {
         printf("%ssystemd %i%s (" GIT_VERSION ")\n%s\n",
                ansi_highlight(), PROJECT_VERSION, ansi_normal(),
                b ?: systemd_features);
+        return 0;
+}
+
+int version_only(void) {
+        /* Used by udev. Dracut relies on the version being a single integer */
+        puts(PROJECT_VERSION_STR);
         return 0;
 }

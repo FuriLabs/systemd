@@ -4,7 +4,7 @@
 #include <limits.h>
 #include <time.h>
 
-#include "basic-forward.h"
+#include "forward.h"
 
 #define PRI_NSEC PRIu64
 #define PRI_USEC PRIu64
@@ -216,6 +216,8 @@ static inline int parse_calendar_date(const char *s, usec_t *ret) {
 static inline int parse_birth_date(const char *s, struct tm *ret) {
         return parse_calendar_date_full(s, /* allow_pre_epoch= */ true, NULL, ret);
 }
+
+uint64_t sysconf_clock_ticks_cached(void);
 
 uint32_t usec_to_jiffies(usec_t usec);
 usec_t jiffies_to_usec(uint32_t jiffies);
