@@ -1,3 +1,9 @@
+systemd (262~rc1-2) unstable; urgency=medium
+
+  * Install 60-tpm2-id.rules on all architectures
+
+ -- Luca Boccassi <bluca@debian.org>  Tue, 01 Sep 2026 22:23:16 +0100
+
 systemd (262~rc1-1) unstable; urgency=medium
 
   [ Luca Boccassi ]
