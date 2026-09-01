@@ -42,6 +42,7 @@ libsystemd.so.0 libsystemd0 #MINVER#
  LIBSYSTEMD_259@LIBSYSTEMD_259 259~rc1
  LIBSYSTEMD_260@LIBSYSTEMD_260 260~rc1
  LIBSYSTEMD_261@LIBSYSTEMD_261 261~rc1
+ LIBSYSTEMD_262@LIBSYSTEMD_262 262~rc1
  sd_booted@LIBSYSTEMD_209 0
  sd_bus_add_fallback@LIBSYSTEMD_221 221
  sd_bus_add_fallback_vtable@LIBSYSTEMD_221 221
@@ -813,8 +814,10 @@ libsystemd.so.0 libsystemd0 #MINVER#
  sd_uid_is_on_seat@LIBSYSTEMD_209 0
  sd_varlink_attach_event@LIBSYSTEMD_257 257~rc1
  sd_varlink_bind_reply@LIBSYSTEMD_257 257~rc1
+ sd_varlink_bind_upgrade@LIBSYSTEMD_262 262~rc1
  sd_varlink_call@LIBSYSTEMD_257 257~rc1
  sd_varlink_call_and_upgrade@LIBSYSTEMD_261 261~rc1
+ sd_varlink_call_and_upgradeb@LIBSYSTEMD_262 262~rc1
  sd_varlink_call_full@LIBSYSTEMD_257 257~rc1
  sd_varlink_callb@LIBSYSTEMD_257 257~rc1
  sd_varlink_callb_ap@LIBSYSTEMD_257 257~rc1
@@ -881,6 +884,8 @@ libsystemd.so.0 libsystemd0 #MINVER#
  sd_varlink_reply_and_upgrade@LIBSYSTEMD_261 261~rc1
  sd_varlink_replyb@LIBSYSTEMD_257 257~rc1
  sd_varlink_reset_fds@LIBSYSTEMD_258 258~rc1
+ sd_varlink_respond_and_upgrade@LIBSYSTEMD_262 262~rc1
+ sd_varlink_respond_and_upgradeb@LIBSYSTEMD_262 262~rc1
  sd_varlink_send@LIBSYSTEMD_257 257~rc1
  sd_varlink_sendb@LIBSYSTEMD_257 257~rc1
  sd_varlink_server_add_connection@LIBSYSTEMD_257 257~rc1
