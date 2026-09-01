@@ -127,6 +127,7 @@ int vl_method_register(sd_varlink *link, sd_json_variant *parameters, sd_varlink
         Manager *manager = ASSERT_PTR(userdata);
         _cleanup_(machine_freep) Machine *machine = NULL;
         const char *bad_field = NULL;
+        bool sender_is_admin = false;
         int r;
 
         static const sd_json_dispatch_field dispatch_table[] = {
@@ -162,13 +163,16 @@ int vl_method_register(sd_varlink *link, sd_json_variant *parameters, sd_varlink
                 return sd_varlink_error_invalid_parameter_name(link, "class");
 
         if (manager->runtime_scope != RUNTIME_SCOPE_USER) {
-                r = varlink_verify_polkit_async(
+                r = varlink_verify_polkit_async_full(
                                 link,
                                 manager->system_bus,
                                 machine->allocate_unit ? "org.freedesktop.machine1.create-machine" : "org.freedesktop.machine1.register-machine",
                                 (const char**) STRV_MAKE("name", machine->name,
                                                          "class", machine_class_to_string(machine->class)),
-                                &manager->polkit_registry);
+                                /* good_user= */ UID_INVALID,
+                                /* flags= */ 0,
+                                &manager->polkit_registry,
+                                &sender_is_admin);
                 if (r <= 0)
                         return r;
         }
@@ -196,7 +200,7 @@ int vl_method_register(sd_varlink *link, sd_json_variant *parameters, sd_varlink
         /* In system scope, ensure an unprivileged user cannot claim any process they don't
          * control as their own machine. In user scope the varlink socket is already
          * protected by $XDG_RUNTIME_DIR permissions. */
-        if (manager->runtime_scope != RUNTIME_SCOPE_USER && machine->uid != 0) {
+        if (manager->runtime_scope != RUNTIME_SCOPE_USER && machine->uid != 0 && !sender_is_admin) {
                 r = process_is_owned_by_uid(&machine->leader, machine->uid);
                 if (r < 0)
                         return r;
@@ -323,7 +327,8 @@ int vl_method_unregister_internal(sd_varlink *link, sd_json_variant *parameters,
                                                          "verb", "unregister"),
                                 machine->uid,
                                 /* flags= */ 0,
-                                &manager->polkit_registry);
+                                &manager->polkit_registry,
+                                /* ret_admin= */ NULL);
                 if (r <= 0)
                         return r;
         }
@@ -349,7 +354,8 @@ int vl_method_terminate_internal(sd_varlink *link, sd_json_variant *parameters, 
                                                          "verb", "terminate"),
                                 machine->uid,
                                 /* flags= */ 0,
-                                &manager->polkit_registry);
+                                &manager->polkit_registry,
+                                /* ret_admin= */ NULL);
                 if (r <= 0)
                         return r;
         }
@@ -417,7 +423,8 @@ int vl_method_kill(sd_varlink *link, sd_json_variant *parameters, sd_varlink_met
                                                          "verb", "kill"),
                                 machine->uid,
                                 /* flags= */ 0,
-                                &manager->polkit_registry);
+                                &manager->polkit_registry,
+                                /* ret_admin= */ NULL);
                 if (r <= 0)
                         return r;
         }
@@ -583,7 +590,8 @@ int vl_method_open(sd_varlink *link, sd_json_variant *parameters, sd_varlink_met
                                 (const char**) polkit_details,
                                 machine->uid,
                                 /* flags= */ 0,
-                                &manager->polkit_registry);
+                                &manager->polkit_registry,
+                                /* ret_admin= */ NULL);
                 if (r <= 0)
                         return r;
         }
@@ -958,7 +966,7 @@ int vl_method_copy_internal(sd_varlink *link, sd_json_variant *parameters, sd_va
         const char *dest = p.dest ?: p.src;
         const char *container_path = copy_from ? p.src : dest;
         const char *host_path = copy_from ? dest : p.src;
-        CopyFlags copy_flags = COPY_REFLINK|COPY_MERGE|COPY_HARDLINKS;
+        CopyFlags copy_flags = COPY_MERGE|COPY_HARDLINKS;
         copy_flags |= p.replace ? COPY_REPLACE : 0;
 
         Machine *machine;

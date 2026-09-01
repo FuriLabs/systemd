@@ -3,7 +3,7 @@
 #include <sched.h>
 #include <stdlib.h>
 #include <sys/mman.h>
-#include <sys/prctl.h>
+#include <sys/prctl.h> /* IWYU pragma: keep */
 
 #include "argv-util.h"
 #include "capability-util.h"
@@ -13,7 +13,6 @@
 #include "path-util.h"
 #include "process-util.h"
 #include "string-util.h"
-#include "strv.h"
 
 int saved_argc = 0;
 char **saved_argv = NULL;
@@ -29,7 +28,7 @@ void save_argc_argv(int argc, char **argv) {
 }
 
 bool invoked_as(char *argv[], const char *token) {
-        const char *progname = secure_getenv("SYSTEMD_INVOKED_AS");
+        const char *progname = empty_to_null(secure_getenv("SYSTEMD_INVOKED_AS"));
 
         if (!progname && argv)
                 progname = argv[0];
@@ -67,32 +66,6 @@ bool invoked_by_systemd(void) {
 
         cached = getpid_cached() == p;
         return cached;
-}
-
-bool argv_looks_like_help(int argc, char **argv) {
-        char **l;
-
-        /* Scans the command line for indications the user asks for help. This is supposed to be called by
-         * tools that do not implement getopt()-style command line parsing because they are not primarily
-         * user-facing. Detects four ways of asking for help:
-         *
-         * 1. Passing zero arguments
-         * 2. Passing "help" as first argument
-         * 3. Passing --help as any argument
-         * 4. Passing -h as any argument
-         */
-        assert(argc == 0 || argv);
-
-        if (argc <= 1)
-                return true;
-
-        if (streq_ptr(argv[1], "help"))
-                return true;
-
-        l = strv_skip(argv, 1);
-
-        return strv_contains(l, "--help") ||
-                strv_contains(l, "-h");
 }
 
 static int update_argv(const char name[], size_t l) {
@@ -133,10 +106,10 @@ static int update_argv(const char name[], size_t l) {
                 strncpy(nn, name, nn_size);
 
                 /* Now, let's tell the kernel about this new memory */
-                if (prctl(PR_SET_MM, PR_SET_MM_ARG_START, (unsigned long) nn, 0, 0) < 0) {
-                        if (ERRNO_IS_PRIVILEGE(errno))
-                                return log_debug_errno(errno, "PR_SET_MM_ARG_START failed: %m");
-
+                r = prctl_safe(PR_SET_MM, PR_SET_MM_ARG_START, (unsigned long) nn, 0, 0);
+                if (ERRNO_IS_NEG_PRIVILEGE(r))
+                        return log_debug_errno(r, "PR_SET_MM_ARG_START failed: %m");
+                if (r < 0) {
                         /* HACK: prctl() API is kind of dumb on this point.  The existing end address may already be
                          * below the desired start address, in which case the kernel may have kicked this back due
                          * to a range-check failure (see linux/kernel/sys.c:validate_prctl_map() to see this in
@@ -145,22 +118,25 @@ static int update_argv(const char name[], size_t l) {
                          * and respond accordingly.  For now, we can only guess at the cause of this failure and try
                          * a workaround--which will briefly expand the arg space to something potentially huge before
                          * resizing it to what we want. */
-                        log_debug_errno(errno, "PR_SET_MM_ARG_START failed, attempting PR_SET_MM_ARG_END hack: %m");
+                        log_debug_errno(r, "PR_SET_MM_ARG_START failed, attempting PR_SET_MM_ARG_END hack: %m");
 
-                        if (prctl(PR_SET_MM, PR_SET_MM_ARG_END, (unsigned long) nn + l + 1, 0, 0) < 0) {
-                                r = log_debug_errno(errno, "PR_SET_MM_ARG_END hack failed, proceeding without: %m");
+                        r = prctl_safe(PR_SET_MM, PR_SET_MM_ARG_END, (unsigned long) nn + l + 1, 0, 0);
+                        if (r < 0) {
+                                log_debug_errno(r, "PR_SET_MM_ARG_END hack failed, proceeding without: %m");
                                 (void) munmap(nn, nn_size);
                                 return r;
                         }
 
-                        if (prctl(PR_SET_MM, PR_SET_MM_ARG_START, (unsigned long) nn, 0, 0) < 0)
-                                return log_debug_errno(errno, "PR_SET_MM_ARG_START still failed, proceeding without: %m");
+                        r = prctl_safe(PR_SET_MM, PR_SET_MM_ARG_START, (unsigned long) nn, 0, 0);
+                        if (r < 0)
+                                return log_debug_errno(r, "PR_SET_MM_ARG_START still failed, proceeding without: %m");
                 } else {
                         /* And update the end pointer to the new end, too. If this fails, we don't really know what
                          * to do, it's pretty unlikely that we can rollback, hence we'll just accept the failure,
                          * and continue. */
-                        if (prctl(PR_SET_MM, PR_SET_MM_ARG_END, (unsigned long) nn + l + 1, 0, 0) < 0)
-                                log_debug_errno(errno, "PR_SET_MM_ARG_END failed, proceeding without: %m");
+                        r = prctl_safe(PR_SET_MM, PR_SET_MM_ARG_END, (unsigned long) nn + l + 1, 0, 0);
+                        if (r < 0)
+                                log_debug_errno(r, "PR_SET_MM_ARG_END failed, proceeding without: %m");
                 }
 
                 if (mm)
@@ -172,8 +148,9 @@ static int update_argv(const char name[], size_t l) {
                 strncpy(mm, name, mm_size);
 
                 /* Update the end pointer, continuing regardless of any failure. */
-                if (prctl(PR_SET_MM, PR_SET_MM_ARG_END, (unsigned long) mm + l + 1, 0, 0) < 0)
-                        log_debug_errno(errno, "PR_SET_MM_ARG_END failed, proceeding without: %m");
+                r = prctl_safe(PR_SET_MM, PR_SET_MM_ARG_END, (unsigned long) mm + l + 1, 0, 0);
+                if (r < 0)
+                        log_debug_errno(r, "PR_SET_MM_ARG_END failed, proceeding without: %m");
         }
 
         can_do = true;
@@ -182,6 +159,7 @@ static int update_argv(const char name[], size_t l) {
 
 int rename_process_full(const char *comm, const char *invocation) {
         bool truncated = false;
+        int r;
 
         /* This is a like a poor man's setproctitle(). It changes the comm field by the name specified by
          * 'comm', and changes argv[0] and the glibc's internally used names of the process
@@ -204,8 +182,9 @@ int rename_process_full(const char *comm, const char *invocation) {
 
         /* First step, change the comm field. The main thread's comm is identical to the process comm. This means we
          * can use PR_SET_NAME, which sets the thread name for the calling thread. */
-        if (prctl(PR_SET_NAME, comm) < 0)
-                log_debug_errno(errno, "PR_SET_NAME failed: %m");
+        r = proc_set_comm(comm);
+        if (r < 0)
+                log_debug_errno(r, "PR_SET_NAME failed: %m");
         if (l >= TASK_COMM_LEN) /* Linux userspace process names can be 15 chars at max */
                 truncated = true;
 

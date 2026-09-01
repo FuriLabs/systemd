@@ -19,12 +19,10 @@
 #include "bus-util.h"
 #include "errno-util.h"
 #include "format-table.h"
-#include "help-util.h"
 #include "hostname-setup.h"
 #include "hostname-util.h"
 #include "log.h"
 #include "main-func.h"
-#include "options.h"
 #include "os-util.h"
 #include "parse-argument.h"
 #include "polkit-agent.h"
@@ -41,6 +39,12 @@ static bool arg_transient = false;
 static bool arg_pretty = false;
 static bool arg_static = false;
 static sd_json_format_flags_t arg_json_format_flags = SD_JSON_FORMAT_OFF;
+
+COMMAND(
+        "hostnamectl\0",
+        "Query or change system hostname.",
+        .man_pages = "hostnamectl(1)\0",
+);
 
 typedef struct StatusInfo {
         const char *hostname;
@@ -706,42 +710,42 @@ static int verb_set_hostname(int argc, char *argv[], uintptr_t _data, void *user
         return ret;
 }
 
-VERB(verb_get_or_set_hostname, "hostname", "[NAME]", VERB_ANY, 2, 0, "Get/set system hostname");
-VERB(verb_get_or_set_hostname, "set-hostname", "NAME", 2, 2, 0, NULL); /* obsolete */
+VERB(verb_get_or_set_hostname, "hostname", "[NAME]\0", VERB_ANY, 2, 0, "Get/set system hostname");
+VERB(verb_get_or_set_hostname, "set-hostname", "NAME\0", 2, 2, 0, NULL); /* obsolete */
 static int verb_get_or_set_hostname(int argc, char *argv[], uintptr_t data, void *userdata) {
         return argc == 1 ? get_hostname_based_on_flag(userdata) :
                            verb_set_hostname(argc, argv, data, userdata);
 }
 
-VERB(verb_get_or_set_icon_name, "icon-name", "[NAME]", VERB_ANY, 2, 0, "Get/set icon name for host");
-VERB(verb_get_or_set_icon_name, "set-icon-name", "NAME", 2, 2, 0, NULL); /* obsolete */
+VERB(verb_get_or_set_icon_name, "icon-name", "[NAME]\0", VERB_ANY, 2, 0, "Get/set icon name for host");
+VERB(verb_get_or_set_icon_name, "set-icon-name", "NAME\0", 2, 2, 0, NULL); /* obsolete */
 static int verb_get_or_set_icon_name(int argc, char *argv[], uintptr_t _data, void *userdata) {
         return argc == 1 ? get_one_name(userdata, "IconName", NULL) :
                            set_simple_string(userdata, "icon", "SetIconName", argv[1]);
 }
 
-VERB(verb_get_or_set_chassis, "chassis", "[NAME]", VERB_ANY, 2, 0, "Get/set chassis type for host");
-VERB(verb_get_or_set_chassis, "set-chassis", "NAME", 2, 2, 0, NULL); /* obsolete */
+VERB(verb_get_or_set_chassis, "chassis", "[NAME]\0", VERB_ANY, 2, 0, "Get/set chassis type for host");
+VERB(verb_get_or_set_chassis, "set-chassis", "NAME\0", 2, 2, 0, NULL); /* obsolete */
 static int verb_get_or_set_chassis(int argc, char *argv[], uintptr_t _data, void *userdata) {
         return argc == 1 ? get_one_name(userdata, "Chassis", NULL) :
                            set_simple_string(userdata, "chassis", "SetChassis", argv[1]);
 }
 
-VERB(verb_get_or_set_deployment, "deployment", "[NAME]", VERB_ANY, 2, 0, "Get/set deployment environment for host");
-VERB(verb_get_or_set_deployment, "set-deployment", "NAME", 2, 2, 0, NULL); /* obsolete */
+VERB(verb_get_or_set_deployment, "deployment", "[NAME]\0", VERB_ANY, 2, 0, "Get/set deployment environment for host");
+VERB(verb_get_or_set_deployment, "set-deployment", "NAME\0", 2, 2, 0, NULL); /* obsolete */
 static int verb_get_or_set_deployment(int argc, char *argv[], uintptr_t _data, void *userdata) {
         return argc == 1 ? get_one_name(userdata, "Deployment", NULL) :
                            set_simple_string(userdata, "deployment", "SetDeployment", argv[1]);
 }
 
-VERB(verb_get_or_set_location, "location", "[NAME]", VERB_ANY, 2, 0, "Get/set location for host");
-VERB(verb_get_or_set_location, "set-location", "NAME", 2, 2, 0, NULL); /* obsolete */
+VERB(verb_get_or_set_location, "location", "[NAME]\0", VERB_ANY, 2, 0, "Get/set location for host");
+VERB(verb_get_or_set_location, "set-location", "NAME\0", 2, 2, 0, NULL); /* obsolete */
 static int verb_get_or_set_location(int argc, char *argv[], uintptr_t _data, void *userdata) {
         return argc == 1 ? get_one_name(userdata, "Location", NULL) :
                            set_simple_string(userdata, "location", "SetLocation", argv[1]);
 }
 
-VERB(verb_get_or_set_tags, "tags", "[TAG …]", VERB_ANY, VERB_ANY, 0, "Get/set machine tags for host");
+VERB(verb_get_or_set_tags, "tags", "[TAG …]\0", VERB_ANY, VERB_ANY, 0, "Get/set machine tags for host");
 static int verb_get_or_set_tags(int argc, char *argv[], uintptr_t _data, void *userdata) {
         _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
         sd_bus *bus = ASSERT_PTR(userdata);
@@ -772,25 +776,75 @@ static int verb_get_or_set_tags(int argc, char *argv[], uintptr_t _data, void *u
                 return 0;
         }
 
-        _cleanup_strv_free_ char **l = NULL;
+        _cleanup_strv_free_ char **plain = NULL, **add = NULL, **remove = NULL;
+        bool prefixed = false, unprefixed = false;
         for (int i = 1; i < argc; i++) {
-                r = strv_split_and_extend(&l, argv[i], ":", /* filter_duplicates= */ true);
-                if (r < 0)
+                const char *e = argv[i];
+                char ***dest;
+
+                /* The first character of each argument selects the mode for all (colon-separated) tags in
+                 * that argument: a leading '+' adds them, a leading '-' removes them, and otherwise the
+                 * argument lists tags to set verbatim. Setting and adding/removing may not be mixed. */
+                if (e[0] == '+') {
+                        dest = &add;
+                        e++;
+                        prefixed = true;
+                } else if (e[0] == '-') {
+                        dest = &remove;
+                        e++;
+                        prefixed = true;
+                } else {
+                        dest = &plain;
+                        unprefixed = true;
+                }
+
+                if (isempty(e)) {
+                        if (dest == &plain && !*dest) {
+                                *dest = new0(char*, 1);
+                                if (!*dest)
+                                        return log_oom();
+                        }
+                } else if (strv_split_and_extend(dest, e, ":", /* filter_duplicates= */ true) < 0)
                         return log_oom();
         }
 
-        strv_sort(l);
+        if (prefixed && unprefixed)
+                return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
+                                       "Plain tags may not be combined with '+'/'-' prefixed tags.");
 
         (void) polkit_agent_open_if_enabled(arg_transport, arg_ask_password);
 
         _cleanup_(sd_bus_message_unrefp) sd_bus_message *m = NULL;
-        r = bus_message_new_method_call(bus, &m, bus_hostname, "SetTags");
-        if (r < 0)
-                return bus_log_create_error(r);
 
-        r = sd_bus_message_append_strv(m, l);
-        if (r < 0)
-                return bus_log_create_error(r);
+        if (!prefixed) {
+                /* No prefixes used: replace the whole tag list with the given tags (possibly empty, which
+                 * clears all tags). */
+                strv_sort(plain);
+
+                r = bus_message_new_method_call(bus, &m, bus_hostname, "SetTags");
+                if (r < 0)
+                        return bus_log_create_error(r);
+
+                r = sd_bus_message_append_strv(m, plain);
+                if (r < 0)
+                        return bus_log_create_error(r);
+        } else {
+                /* Prefixes used: incrementally add and/or remove tags. */
+                strv_sort(add);
+                strv_sort(remove);
+
+                r = bus_message_new_method_call(bus, &m, bus_hostname, "AddAndRemoveTags");
+                if (r < 0)
+                        return bus_log_create_error(r);
+
+                r = sd_bus_message_append_strv(m, add);
+                if (r < 0)
+                        return bus_log_create_error(r);
+
+                r = sd_bus_message_append_strv(m, remove);
+                if (r < 0)
+                        return bus_log_create_error(r);
+        }
 
         r = sd_bus_call(bus, m, /* usec= */ 0, &error, /* ret_reply= */ NULL);
         if (r < 0)
@@ -799,38 +853,7 @@ static int verb_get_or_set_tags(int argc, char *argv[], uintptr_t _data, void *u
         return 0;
 }
 
-static int help(void) {
-        _cleanup_(table_unrefp) Table *options = NULL, *verbs = NULL;
-        int r;
-
-        r = option_parser_get_help_table(&options);
-        if (r < 0)
-                return r;
-
-        r = verbs_get_help_table(&verbs);
-        if (r < 0)
-                return r;
-
-        (void) table_sync_column_widths(0, options, verbs);
-
-        help_cmdline("[OPTIONS...] COMMAND ...");
-        help_abstract("Query or change system hostname.");
-
-        help_section("Commands");
-        r = table_print_or_warn(verbs);
-        if (r < 0)
-                return r;
-
-        help_section("Options");
-        r = table_print_or_warn(options);
-        if (r < 0)
-                return r;
-
-        help_man_page_reference("hostnamectl", "1");
-        return 0;
-}
-
-VERB_COMMON_HELP_HIDDEN(help);
+VERB_COMMON_HELP_AUTO_HIDDEN();
 
 static int parse_argv(int argc, char *argv[], char ***ret_args) {
         int r;
@@ -843,7 +866,7 @@ static int parse_argv(int argc, char *argv[], char ***ret_args) {
         FOREACH_OPTION_OR_RETURN(c, &opts)
                 switch (c) {
                 OPTION_COMMON_HELP:
-                        return help();
+                        return command_print_help();
 
                 OPTION_COMMON_VERSION:
                         return version();
@@ -884,6 +907,9 @@ static int parse_argv(int argc, char *argv[], char ***ret_args) {
                 OPTION_COMMON_LOWERCASE_J:
                         arg_json_format_flags = SD_JSON_FORMAT_PRETTY_AUTO|SD_JSON_FORMAT_COLOR_AUTO;
                         break;
+
+                OPTION_COMMON_INTROSPECT_CLI:
+                        return introspect_cli(arg_json_format_flags);
                 }
 
         *ret_args = option_parser_get_args(&opts);

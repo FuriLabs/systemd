@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 
 #include "sd-bus.h"
+#include "sd-json.h"
 
 #include "alloc-util.h"
 #include "ansi-color.h"
@@ -16,10 +17,8 @@
 #include "format-table.h"
 #include "fs-util.h"
 #include "glyph-util.h"
-#include "help-util.h"
 #include "install.h"
 #include "main-func.h"
-#include "options.h"
 #include "os-util.h"
 #include "pager.h"
 #include "parse-argument.h"
@@ -51,6 +50,13 @@ static bool arg_clean = false;
 static RuntimeScope arg_runtime_scope = RUNTIME_SCOPE_SYSTEM;
 
 STATIC_DESTRUCTOR_REGISTER(arg_extension_images, strv_freep);
+
+COMMAND(
+        "portablectl\0",
+        "Attach or detach portable services in the local system.",
+        .man_pages = "portablectl(1)\0",
+        .pager_flags = &arg_pager_flags,
+);
 
 static bool is_portable_managed(const char *unit) {
         return ENDSWITH_SET(unit, ".service", ".target", ".socket", ".path", ".timer");
@@ -195,6 +201,9 @@ static int determine_matches(const char *image, char **l, bool allow_any, char *
         _cleanup_strv_free_ char **k = NULL;
         int r;
 
+        assert(image);
+        assert(ret);
+
         /* Determine the matches to apply. If the list is empty we derive the match from the image name. If
          * the list contains exactly the "-" we return a wildcard list (which is the empty list), but only if
          * this is expressly permitted. */
@@ -265,7 +274,7 @@ static int maybe_reload(sd_bus **bus) {
 }
 
 VERB_DEFAULT_NOARG(verb_list_images, "list",
-     "List available portable service images (default)");
+     "List available portable service images");
 static int verb_list_images(int argc, char *argv[], uintptr_t _data, void *userdata) {
         _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
         _cleanup_(sd_bus_message_unrefp) sd_bus_message *reply = NULL;
@@ -465,7 +474,7 @@ static bool image_metadata_error_is_no_match(const sd_bus_error *error) {
         return sd_bus_error_has_name(error, BUS_ERROR_NO_MATCHING_UNIT_FILES);
 }
 
-VERB(verb_inspect_image, "inspect", "NAME|PATH [PREFIX…]", 2, VERB_ANY, 0,
+VERB(verb_inspect_image, "inspect", "NAME|PATH [PREFIX…]\0", 2, VERB_ANY, 0,
      "Show details of specified portable service image");
 static int verb_inspect_image(int argc, char *argv[], uintptr_t _data, void *userdata) {
         _cleanup_(sd_bus_message_unrefp) sd_bus_message *m = NULL;
@@ -801,21 +810,17 @@ static int maybe_enable_disable(sd_bus *bus, const char *path, bool enable) {
         return 0;
 }
 
-static int maybe_start_stop_restart(sd_bus *bus, const char *path, const char *method, BusWaitForJobs *wait) {
+static int maybe_start_stop_restart(sd_bus *bus, const char *name, const char *method, BusWaitForJobs *wait) {
         _cleanup_(sd_bus_message_unrefp) sd_bus_message *reply = NULL;
         _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
-        _cleanup_free_ char *name = NULL;
         const char *job = NULL;
         int r;
 
+        assert(name);
         assert(STR_IN_SET(method, "StartUnit", "StopUnit", "RestartUnit"));
 
         if (!arg_now)
                 return 0;
-
-        r = path_extract_filename(path, &name);
-        if (r < 0)
-                return log_error_errno(r, "Failed to extract file name from '%s': %m", path);
 
         r = bus_call_method(
                         bus,
@@ -827,7 +832,7 @@ static int maybe_start_stop_restart(sd_bus *bus, const char *path, const char *m
         if (r < 0)
                 return log_error_errno(r, "Failed to call %s on the portable service %s: %s",
                                        method,
-                                       path,
+                                       name,
                                        bus_error_message(&error, r));
 
         r = sd_bus_message_read(reply, "o", &job);
@@ -847,8 +852,92 @@ static int maybe_start_stop_restart(sd_bus *bus, const char *path, const char *m
         return 0;
 }
 
+static int maybe_start_stop_restart_units(
+                sd_bus *bus,
+                char * const *names,
+                const char *job_type,
+                BusWaitForJobs *wait) {
+
+        _cleanup_(sd_bus_message_unrefp) sd_bus_message *m = NULL, *reply = NULL;
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
+        const char *method;
+        int r;
+
+        assert(bus);
+        assert(STR_IN_SET(job_type, "start", "stop", "restart"));
+
+        if (!arg_now || strv_isempty(names))
+                return 0;
+
+        method = streq(job_type, "start") ? "StartUnit" :
+                 streq(job_type, "stop")  ? "StopUnit"  :
+                                            "RestartUnit";
+
+        /* Prefer the new EnqueueUnitJobMany() method which submits all units in a single transaction.
+         * Falls back to per-unit calls on older managers (UnknownMethod) or when the new method rejects
+         * something about the request (InvalidArgs). */
+        r = bus_message_new_method_call(bus, &m, bus_systemd_mgr, "EnqueueUnitJobMany");
+        if (r < 0)
+                return bus_log_create_error(r);
+
+        r = sd_bus_message_append_strv(m, (char**) names);
+        if (r < 0)
+                return bus_log_create_error(r);
+
+        r = sd_bus_message_append(m, "sst", job_type, "replace", UINT64_C(0));
+        if (r < 0)
+                return bus_log_create_error(r);
+
+        r = sd_bus_call(bus, m, 0, &error, &reply);
+        if (r >= 0) {
+                r = sd_bus_message_enter_container(reply, 'a', "(uosos)");
+                if (r < 0)
+                        return bus_log_parse_error(r);
+
+                for (;;) {
+                        const char *path, *unit_id;
+                        uint32_t id;
+
+                        r = sd_bus_message_read(reply, "(uosos)", &id, &path, &unit_id, NULL, NULL);
+                        if (r < 0)
+                                return bus_log_parse_error(r);
+                        if (r == 0)
+                                break;
+
+                        if (!arg_quiet)
+                                log_info("Queued %s to call %s on portable service %s.", path, method, unit_id);
+
+                        if (wait) {
+                                r = bus_wait_for_jobs_add(wait, path);
+                                if (r < 0)
+                                        return log_error_errno(r, "Failed to watch %s job to call %s on %s: %m",
+                                                               path, method, unit_id);
+                        }
+                }
+
+                r = sd_bus_message_exit_container(reply);
+                if (r < 0)
+                        return bus_log_parse_error(r);
+
+                return 0;
+        }
+
+        if (!sd_bus_error_has_names(&error, SD_BUS_ERROR_UNKNOWN_METHOD, SD_BUS_ERROR_INVALID_ARGS))
+                return log_error_errno(r, "Failed to enqueue jobs for portable services: %s",
+                                       bus_error_message(&error, r));
+
+        log_debug_errno(r, "EnqueueUnitJobMany() not supported (%s), falling back to per-unit calls.",
+                        bus_error_message(&error, r));
+
+        STRV_FOREACH(name, names)
+                (void) maybe_start_stop_restart(bus, *name, method, wait);
+
+        return 0;
+}
+
 static int maybe_enable_start(sd_bus *bus, sd_bus_message *reply) {
         _cleanup_(bus_wait_for_jobs_freep) BusWaitForJobs *wait = NULL;
+        _cleanup_strv_free_ char **start_names = NULL;
         int r;
 
         if (!arg_enable && !arg_now)
@@ -878,13 +967,23 @@ static int maybe_enable_start(sd_bus *bus, sd_bus_message *reply) {
 
                 if (STR_IN_SET(type, "symlink", "copy") && is_portable_managed(path)) {
                         (void) maybe_enable_disable(bus, path, true);
-                        (void) maybe_start_stop_restart(bus, path, "StartUnit", wait);
+
+                        _cleanup_free_ char *name = NULL;
+                        r = path_extract_filename(path, &name);
+                        if (r < 0)
+                                return log_error_errno(r, "Failed to extract file name from '%s': %m", path);
+
+                        r = strv_consume(&start_names, TAKE_PTR(name));
+                        if (r < 0)
+                                return log_oom();
                 }
         }
 
         r = sd_bus_message_exit_container(reply);
         if (r < 0)
                 return r;
+
+        (void) maybe_start_stop_restart_units(bus, start_names, "start", wait);
 
         if (!arg_no_block) {
                 r = bus_wait_for_jobs(wait, arg_quiet, NULL);
@@ -897,6 +996,7 @@ static int maybe_enable_start(sd_bus *bus, sd_bus_message *reply) {
 
 static int maybe_stop_enable_restart(sd_bus *bus, sd_bus_message *reply) {
         _cleanup_(bus_wait_for_jobs_freep) BusWaitForJobs *wait = NULL;
+        _cleanup_strv_free_ char **stop_names = NULL, **restart_names = NULL;
         int r;
 
         if (!arg_enable && !arg_now)
@@ -927,13 +1027,24 @@ static int maybe_stop_enable_restart(sd_bus *bus, sd_bus_message *reply) {
                 if (r == 0)
                         break;
 
-                if (streq(type, "unlink") && is_portable_managed(path))
-                        (void) maybe_start_stop_restart(bus, path, "StopUnit", wait);
+                if (streq(type, "unlink") && is_portable_managed(path) && arg_now) {
+                        _cleanup_free_ char *name = NULL;
+
+                        r = path_extract_filename(path, &name);
+                        if (r < 0)
+                                return log_error_errno(r, "Failed to extract file name from '%s': %m", path);
+
+                        r = strv_consume(&stop_names, TAKE_PTR(name));
+                        if (r < 0)
+                                return log_oom();
+                }
         }
 
         r = sd_bus_message_exit_container(reply);
         if (r < 0)
                 return r;
+
+        (void) maybe_start_stop_restart_units(bus, stop_names, "stop", wait);
 
         /* Then we get a list of units that were either added or changed, so that we can
          * enable them and/or restart them if the user asked us to. */
@@ -952,13 +1063,23 @@ static int maybe_stop_enable_restart(sd_bus *bus, sd_bus_message *reply) {
 
                 if (STR_IN_SET(type, "symlink", "copy") && is_portable_managed(path)) {
                         (void) maybe_enable_disable(bus, path, true);
-                        (void) maybe_start_stop_restart(bus, path, "RestartUnit", wait);
+
+                        _cleanup_free_ char *name = NULL;
+                        r = path_extract_filename(path, &name);
+                        if (r < 0)
+                                return log_error_errno(r, "Failed to extract file name from '%s': %m", path);
+
+                        r = strv_consume(&restart_names, TAKE_PTR(name));
+                        if (r < 0)
+                                return log_oom();
                 }
         }
 
         r = sd_bus_message_exit_container(reply);
         if (r < 0)
                 return r;
+
+        (void) maybe_start_stop_restart_units(bus, restart_names, "restart", wait);
 
         if (!arg_no_block) {
                 r = bus_wait_for_jobs(wait, arg_quiet, NULL);
@@ -1063,9 +1184,6 @@ static int maybe_stop_disable_clean(sd_bus *bus, char *image, char *argv[]) {
                 if (r < 0)
                         return bus_log_parse_error(r);
 
-                (void) maybe_start_stop_restart(bus, name, "StopUnit", wait);
-                (void) maybe_enable_disable(bus, name, false);
-
                 r = strv_extend(&units, name);
                 if (r < 0)
                         return log_oom();
@@ -1074,6 +1192,12 @@ static int maybe_stop_disable_clean(sd_bus *bus, char *image, char *argv[]) {
         r = sd_bus_message_exit_container(reply);
         if (r < 0)
                 return bus_log_parse_error(r);
+
+        (void) maybe_start_stop_restart_units(bus, units, "stop", wait);
+
+        /* Disable after stopping to match the idiomatic stop-then-disable lifecycle order. */
+        STRV_FOREACH(name, units)
+                (void) maybe_enable_disable(bus, *name, false);
 
         /* Stopping must always block or the detach will fail if the unit is still running */
         r = bus_wait_for_jobs(wait, arg_quiet, NULL);
@@ -1159,13 +1283,13 @@ static int attach_reattach_image(int argc, char *argv[], const char *method) {
         return 0;
 }
 
-VERB(verb_attach_image, "attach", "NAME|PATH [PREFIX…]", 2, VERB_ANY, 0,
+VERB(verb_attach_image, "attach", "NAME|PATH [PREFIX…]\0", 2, VERB_ANY, 0,
      "Attach the specified portable service image");
 static int verb_attach_image(int argc, char *argv[], uintptr_t _data, void *userdata) {
         return attach_reattach_image(argc, argv, strv_isempty(arg_extension_images) && !arg_force ? "AttachImage" : "AttachImageWithExtensions");
 }
 
-VERB(verb_detach_image, "detach", "NAME|PATH [PREFIX…]", 2, VERB_ANY, 0,
+VERB(verb_detach_image, "detach", "NAME|PATH [PREFIX…]\0", 2, VERB_ANY, 0,
      "Detach the specified portable service image");
 static int verb_detach_image(int argc, char *argv[], uintptr_t _data, void *userdata) {
         _cleanup_(sd_bus_message_unrefp) sd_bus_message *m = NULL, *reply = NULL;
@@ -1221,13 +1345,13 @@ static int verb_detach_image(int argc, char *argv[], uintptr_t _data, void *user
         return 0;
 }
 
-VERB(verb_reattach_image, "reattach", "NAME|PATH [PREFIX…]", 2, VERB_ANY, 0,
+VERB(verb_reattach_image, "reattach", "NAME|PATH [PREFIX…]\0", 2, VERB_ANY, 0,
      "Reattach the specified portable service image");
 static int verb_reattach_image(int argc, char *argv[], uintptr_t _data, void *userdata) {
         return attach_reattach_image(argc, argv, strv_isempty(arg_extension_images) && !arg_force ? "ReattachImage" : "ReattachImageWithExtensions");
 }
 
-VERB(verb_is_image_attached, "is-attached", "NAME|PATH", 2, 2, 0,
+VERB(verb_is_image_attached, "is-attached", "NAME|PATH\0", 2, 2, 0,
      "Query if portable service image is attached");
 static int verb_is_image_attached(int argc, char *argv[], uintptr_t _data, void *userdata) {
         _cleanup_(sd_bus_message_unrefp) sd_bus_message *m = NULL, *reply = NULL;
@@ -1279,7 +1403,7 @@ static int verb_is_image_attached(int argc, char *argv[], uintptr_t _data, void 
         return streq(state, "detached");
 }
 
-VERB(verb_read_only_image, "read-only", "NAME|PATH [BOOL]", 2, 3, 0,
+VERB(verb_read_only_image, "read-only", "NAME|PATH [BOOL]\0", 2, 3, 0,
      "Mark or unmark portable service image read-only");
 static int verb_read_only_image(int argc, char *argv[], uintptr_t _data, void *userdata) {
         _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
@@ -1310,7 +1434,7 @@ static int verb_read_only_image(int argc, char *argv[], uintptr_t _data, void *u
         return 0;
 }
 
-VERB(verb_remove_image, "remove", "NAME|PATH…", 2, VERB_ANY, 0,
+VERB(verb_remove_image, "remove", "NAME|PATH…\0", 2, VERB_ANY, 0,
      "Remove a portable service image");
 static int verb_remove_image(int argc, char *argv[], uintptr_t _data, void *userdata) {
         _cleanup_(sd_bus_flush_close_unrefp) sd_bus *bus = NULL;
@@ -1348,7 +1472,7 @@ static int verb_remove_image(int argc, char *argv[], uintptr_t _data, void *user
         return 0;
 }
 
-VERB(verb_set_limit, "set-limit", "[NAME|PATH] LIMIT", 2, 3, 0,
+VERB(verb_set_limit, "set-limit", "[NAME|PATH] LIMIT\0", 2, 3, 0,
      "Set image or pool size limit (disk quota)");
 static int verb_set_limit(int argc, char *argv[], uintptr_t _data, void *userdata) {
         _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
@@ -1413,40 +1537,7 @@ static int dump_profiles(void) {
         return 0;
 }
 
-static int help(void) {
-        _cleanup_(table_unrefp) Table *verbs = NULL, *options = NULL;
-        int r;
-
-        pager_open(arg_pager_flags);
-
-        r = verbs_get_help_table(&verbs);
-        if (r < 0)
-                return r;
-
-        r = option_parser_get_help_table(&options);
-        if (r < 0)
-                return r;
-
-        (void) table_sync_column_widths(0, verbs, options);
-
-        help_cmdline("[OPTIONS…] COMMAND …");
-        help_abstract("Attach or detach portable services in the local system.");
-
-        help_section("Commands");
-        r = table_print_or_warn(verbs);
-        if (r < 0)
-                return r;
-
-        help_section("Options");
-        r = table_print_or_warn(options);
-        if (r < 0)
-                return r;
-
-        help_man_page_reference("portablectl", "1");
-        return 0;
-}
-
-VERB_COMMON_HELP_HIDDEN(help);
+VERB_COMMON_HELP_AUTO_HIDDEN();
 
 static int parse_argv(int argc, char *argv[], char ***remaining_args) {
         assert(argc >= 0);
@@ -1460,7 +1551,7 @@ static int parse_argv(int argc, char *argv[], char ***remaining_args) {
                 switch (c) {
 
                 OPTION_COMMON_HELP:
-                        return help();
+                        return command_print_help();
 
                 OPTION_COMMON_VERSION:
                         return version();
@@ -1577,6 +1668,9 @@ static int parse_argv(int argc, char *argv[], char ***remaining_args) {
                 OPTION_LONG("system", NULL, /* help= */ NULL):
                         arg_runtime_scope = RUNTIME_SCOPE_SYSTEM;
                         break;
+
+                OPTION_COMMON_INTROSPECT_CLI:
+                        return introspect_cli(SD_JSON_FORMAT_OFF);
                 }
 
         *remaining_args = option_parser_get_args(&opts);

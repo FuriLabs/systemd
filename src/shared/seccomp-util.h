@@ -1,12 +1,15 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 #pragma once
 
-#include "sd-dlopen.h"
-
+#include "dlopen-note.h"
 #include "errno-util.h"
-#include "shared-forward.h"
+#include "forward.h"
 
 #if HAVE_SECCOMP
+#ifndef SYSTEMD_CFLAGS_MARKER_LIBSECCOMP
+#  error "missing libseccomp_cflags in meson dependency."
+#endif
+
 #include <seccomp.h> /* IWYU pragma: export */
 
 #include "dlfcn-util.h"
@@ -119,6 +122,7 @@ static inline int seccomp_restrict_realtime(void) {
         return seccomp_restrict_realtime_full(EPERM);
 }
 int seccomp_memory_deny_write_execute(void);
+int seccomp_restrict_ptrace(void);
 int seccomp_lock_personality(unsigned long personality);
 int seccomp_protect_hostname(void);
 int seccomp_restrict_suid_sgid(void);
@@ -157,28 +161,19 @@ int parse_syscall_and_errno(const char *in, char **name, int *error);
 
 int seccomp_suppress_sync(void);
 
-#define LIBSECCOMP_NOTE(priority)                                       \
-        SD_ELF_NOTE_DLOPEN("seccomp",                                   \
-                           "Support for Seccomp Sandboxes",             \
-                           priority,                                    \
-                           "libseccomp.so.2")
-
-#define DLOPEN_LIBSECCOMP(log_level, priority)                          \
-        ({                                                              \
-                LIBSECCOMP_NOTE(priority);                              \
-                dlopen_libseccomp(log_level);                           \
-        })
 #else
 
 static inline bool is_seccomp_available(void) {
         return false;
 }
 
+static inline int seccomp_restrict_ptrace(void) {
+        return -EOPNOTSUPP;
+}
 
-#define DLOPEN_LIBSECCOMP(log_level, priority) dlopen_libseccomp(log_level)
 #endif
 
-int dlopen_libseccomp(int log_level);
+int dlopen_libseccomp(int log_level) _dlopen_loader_;
 
 /* This is a special value to be used where syscall filters otherwise expect errno numbers, will be
    replaced with real seccomp action. */

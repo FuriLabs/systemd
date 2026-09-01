@@ -3,20 +3,21 @@
 #include <locale.h>
 
 #include "sd-journal.h"
+#include "sd-json.h"
 #include "sd-varlink.h"
 
 #include "build.h"
 #include "dissect-image.h"
+#include "dlopen-note.h"
 #include "extract-word.h"
-#include "format-table.h"
 #include "glob-util.h"
-#include "help-util.h"
 #include "id128-print.h"
 #include "image-policy.h"
 #include "journalctl.h"
 #include "journalctl-authenticate.h"
 #include "journalctl-catalog.h"
 #include "journalctl-filter.h"
+#include "journalctl-metrics.h"
 #include "journalctl-misc.h"
 #include "journalctl-show.h"
 #include "journalctl-varlink.h"
@@ -26,7 +27,6 @@
 #include "main-func.h"
 #include "mount-util.h"
 #include "mountpoint-util.h"
-#include "options.h"
 #include "output-mode.h"
 #include "pager.h"
 #include "parse-argument.h"
@@ -41,7 +41,9 @@
 #include "syslog-util.h"
 #include "time-util.h"
 #include "varlink-io.systemd.JournalAccess.h"
+#include "varlink-io.systemd.Metrics.h"
 #include "varlink-util.h"
+#include "verbs.h"
 
 #define DEFAULT_FSS_INTERVAL_USEC (15*USEC_PER_MINUTE)
 
@@ -81,7 +83,7 @@ bool arg_file_stdin = false;
 int arg_priorities = 0;
 Set *arg_facilities = NULL;
 char *arg_verify_key = NULL;
-#if HAVE_GCRYPT
+#if HAVE_OPENSSL
 usec_t arg_interval = DEFAULT_FSS_INTERVAL_USEC;
 bool arg_force = false;
 #endif
@@ -139,6 +141,17 @@ STATIC_DESTRUCTOR_REGISTER(arg_output_fields, set_freep);
 STATIC_DESTRUCTOR_REGISTER(arg_pattern, freep);
 STATIC_DESTRUCTOR_REGISTER(arg_compiled_pattern, pcre2_code_freep);
 STATIC_DESTRUCTOR_REGISTER(arg_image_policy, image_policy_freep);
+
+COMMAND(
+        "journalctl\0",
+        "Query the journal.",
+        .argspec = "[MATCH…]\0",
+        .man_pages = "journalctl(1)\0",
+        .option_namespace = "journalctl",
+        .pager_flags = &arg_pager_flags,
+);
+
+// TODO: also expose journalctl-varlink interface through COMMAND
 
 static int parse_id_descriptor(const char *x, sd_id128_t *ret_id, int *ret_offset) {
         sd_id128_t id = SD_ID128_NULL;
@@ -216,6 +229,43 @@ default_noarg:
         return 0;
 }
 
+static int parse_priorities(const char *arg) {
+        assert(arg);
+
+        const char *dots = strstr(arg, "..");
+        if (dots) {
+                /* a range */
+                _cleanup_free_ char *a = strndup(arg, dots - arg);
+                if (!a)
+                        return log_oom();
+
+                int from = log_level_from_string(a),
+                      to = log_level_from_string(dots + 2);
+
+                if (from < 0 || to < 0)
+                        return log_error_errno(from < 0 ? from : to,
+                                               "Failed to parse log level range %s", arg);
+
+                arg_priorities = 0;
+                if (from < to)
+                        for (int i = from; i <= to; i++)
+                                arg_priorities |= 1 << i;
+                else
+                        for (int i = to; i <= from; i++)
+                                arg_priorities |= 1 << i;
+        } else {
+                int p = log_level_from_string(arg);
+                if (p < 0)
+                        return log_error_errno(p, "Unknown log level %s", arg);
+
+                arg_priorities = 0;
+                for (int i = 0; i <= p; i++)
+                        arg_priorities |= 1 << i;
+        }
+
+        return 0;
+}
+
 static int help_facilities(void) {
         if (!arg_quiet)
                 puts("Available facilities:");
@@ -231,46 +281,6 @@ static int help_facilities(void) {
         return 0;
 }
 
-static int help(void) {
-        static const char *const groups[] = {
-                "Source Options",
-                "Filtering Options",
-                "Output Control Options",
-                "Pager Control Options",
-                "Forward Secure Sealing (FSS) Options",
-                "Commands",
-        };
-
-        Table *tables[ELEMENTSOF(groups)] = {};
-        CLEANUP_ELEMENTS(tables, table_unref_array_clear);
-        int r;
-
-        pager_open(arg_pager_flags);
-
-        for (size_t i = 0; i < ELEMENTSOF(groups); i++) {
-                r = option_parser_get_help_table_full("journalctl", groups[i], &tables[i]);
-                if (r < 0)
-                        return r;
-        }
-
-        assert_cc(ELEMENTSOF(tables) == 6);
-        (void) table_sync_column_widths(0, tables[0], tables[1], tables[2],
-                                        tables[3], tables[4], tables[5]);
-
-        help_cmdline("[OPTIONS…] [MATCHES…]");
-        help_abstract("Query the journal.");
-
-        for (size_t i = 0; i < ELEMENTSOF(groups); i++) {
-                help_section(groups[i]);
-                r = table_print_or_warn(tables[i]);
-                if (r < 0)
-                        return r;
-        }
-
-        help_man_page_reference("journalctl", "1");
-        return 0;
-}
-
 static int vl_server(void) {
         _cleanup_(sd_varlink_server_unrefp) sd_varlink_server *varlink_server = NULL;
         int r;
@@ -279,13 +289,28 @@ static int vl_server(void) {
         if (r < 0)
                 return log_error_errno(r, "Failed to allocate Varlink server: %m");
 
-        r = sd_varlink_server_add_interface(varlink_server, &vl_interface_io_systemd_JournalAccess);
+        /* Serve both interfaces regardless of which socket activated us: both activating sockets share the
+         * same access controls (systemd-journal group), so anyone reaching either is already entitled to
+         * both. */
+        r = sd_varlink_server_add_interface_many(
+                        varlink_server,
+                        &vl_interface_io_systemd_JournalAccess,
+                        &vl_interface_io_systemd_Metrics);
         if (r < 0)
-                return log_error_errno(r, "Failed to add Varlink interface: %m");
+                return log_error_errno(r, "Failed to add Varlink interfaces: %m");
 
-        r = sd_varlink_server_bind_method(varlink_server, "io.systemd.JournalAccess.GetEntries", vl_method_get_entries);
+        r = sd_varlink_server_bind_method_many(
+                        varlink_server,
+                        "io.systemd.JournalAccess.GetEntries", vl_method_get_entries,
+                        "io.systemd.Metrics.List",             vl_method_list_metrics,
+                        "io.systemd.Metrics.Describe",         vl_method_describe_metrics);
         if (r < 0)
-                return log_error_errno(r, "Failed to bind Varlink method: %m");
+                return log_error_errno(r, "Failed to bind Varlink methods: %m");
+
+        /* tears down the streaming state of GetEntries follow=true calls when the client goes away */
+        r = sd_varlink_server_bind_disconnect(varlink_server, vl_on_disconnect);
+        if (r < 0)
+                return log_error_errno(r, "Failed to bind Varlink disconnect handler: %m");
 
         r = sd_varlink_server_loop_auto(varlink_server);
         if (r < 0)
@@ -321,13 +346,35 @@ static int parse_argv(int argc, char *argv[], char ***remaining_args) {
                         OPTION_COMMON_USER:
                                 arg_varlink_runtime_scope = RUNTIME_SCOPE_USER;
                                 break;
-                        }
+
+                        OPTION('p', "priority", "RANGE", "Show entries within the specified priority range"):
+                                r = parse_priorities(opts.arg);
+                                if (r < 0)
+                                        return r;
+                                break;
+
+                        OPTION_FULL(OPTION_OPTIONAL_ARG, 'n', "lines", "[+]INTEGER",
+                                    "Number of journal entries to show"): {
+                                const char *p = opts.arg ?: option_parser_peek_next_arg(&opts);
+
+                                r = parse_lines(p, /* graceful= */ !opts.arg);
+                                if (r < 0)
+                                        return r;
+                                if (r > 0 && !opts.arg)
+                                        (void) option_parser_consume_next_arg(&opts);
+
+                                break;
+                        }}
 
                 if (arg_varlink_runtime_scope < 0)
                         return log_error_errno(arg_varlink_runtime_scope, "Cannot run in Varlink mode with no runtime scope specified.");
 
                 if (option_parser_get_n_args(&opts) > 0)
-                        return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "No arguments expected in Varlink mode.");
+                        return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "No positional arguments expected in Varlink mode.");
+
+                /* We return early, skipping the tristate resolution the regular path does below; resolve it
+                 * here so add_filters() doesn't trip over the unresolved -1. */
+                arg_boot = false;
 
                 *remaining_args = NULL;
                 return 1;
@@ -532,42 +579,11 @@ static int parse_argv(int argc, char *argv[], char ***remaining_args) {
                                 return log_oom();
                         break;
 
-                OPTION('p', "priority", "RANGE", "Show entries within the specified priority range"): {
-
-                        const char *dots = strstr(opts.arg, "..");
-                        if (dots) {
-                                /* a range */
-                                _cleanup_free_ char *a = strndup(opts.arg, dots - opts.arg);
-                                if (!a)
-                                        return log_oom();
-
-                                int from = log_level_from_string(a),
-                                      to = log_level_from_string(dots + 2);
-
-                                if (from < 0 || to < 0)
-                                        return log_error_errno(from < 0 ? from : to,
-                                                               "Failed to parse log level range %s", opts.arg);
-
-                                arg_priorities = 0;
-                                if (from < to)
-                                        for (int i = from; i <= to; i++)
-                                                arg_priorities |= 1 << i;
-                                else
-                                        for (int i = to; i <= from; i++)
-                                                arg_priorities |= 1 << i;
-
-                        } else {
-                                int p = log_level_from_string(opts.arg);
-                                if (p < 0)
-                                        return log_error_errno(p, "Unknown log level %s", opts.arg);
-
-                                arg_priorities = 0;
-                                for (int i = 0; i <= p; i++)
-                                        arg_priorities |= 1 << i;
-                        }
-
+                OPTION('p', "priority", "RANGE", "Show entries within the specified priority range"):
+                        r = parse_priorities(opts.arg);
+                        if (r < 0)
+                                return r;
                         break;
-                }
 
                 OPTION_LONG("facility", "FACILITY…", "Show entries with the specified facilities"):
                         for (const char *p = opts.arg;;) {
@@ -735,7 +751,7 @@ static int parse_argv(int argc, char *argv[], char ***remaining_args) {
                 OPTION_GROUP("Forward Secure Sealing (FSS) Options"): {}
 
                 OPTION_LONG("interval", "TIME", "Time interval for changing the FSS sealing key"):
-#if HAVE_GCRYPT
+#if HAVE_OPENSSL
                         r = parse_sec(opts.arg, &arg_interval);
                         if (r < 0 || arg_interval <= 0)
                                 return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
@@ -747,7 +763,7 @@ static int parse_argv(int argc, char *argv[], char ***remaining_args) {
 #endif
 
                 OPTION_LONG("verify-key", "KEY", "Specify FSS verification key"):
-#if HAVE_GCRYPT
+#if HAVE_OPENSSL
                         erase_and_free(arg_verify_key);
                         arg_verify_key = strdup(opts.arg);
                         if (!arg_verify_key)
@@ -766,7 +782,7 @@ static int parse_argv(int argc, char *argv[], char ***remaining_args) {
 #endif
 
                 OPTION_LONG("force", NULL, "Override of the FSS key pair with --setup-keys"):
-#if HAVE_GCRYPT
+#if HAVE_OPENSSL
                         arg_force = true;
                         break;
 #else
@@ -777,7 +793,7 @@ static int parse_argv(int argc, char *argv[], char ***remaining_args) {
                 OPTION_GROUP("Commands"): {}
 
                 OPTION_COMMON_HELP:
-                        return help();
+                        return command_print_help();
 
                 OPTION_COMMON_VERSION:
                         return version();
@@ -875,7 +891,7 @@ static int parse_argv(int argc, char *argv[], char ***remaining_args) {
                         break;
 
                 OPTION_LONG("setup-keys", NULL, "Generate a new FSS key pair"):
-#if HAVE_GCRYPT
+#if HAVE_OPENSSL
                         arg_action = ACTION_SETUP_KEYS;
                         break;
 #else
@@ -886,6 +902,9 @@ static int parse_argv(int argc, char *argv[], char ***remaining_args) {
                 OPTION_LONG("new-id128", NULL, /* help= */ NULL):
                         arg_action = ACTION_NEW_ID128;
                         break;
+
+                OPTION_COMMON_INTROSPECT_CLI:
+                        return introspect_cli(arg_json_format_flags);
                 }
 
         char **args = option_parser_get_args(&opts);
@@ -985,6 +1004,15 @@ static int run(int argc, char *argv[]) {
         _cleanup_(umount_and_freep) char *mounted_dir = NULL;
         _cleanup_strv_free_ char **args = NULL;
         int r;
+
+        COMPRESS_JOURNAL_NOTE;
+        LIBACL_NOTE(recommended);
+        LIBBLKID_NOTE(recommended);
+        LIBCRYPTO_NOTE(recommended);
+        LIBCRYPTSETUP_NOTE(suggested);
+        LIBMOUNT_NOTE(recommended);
+        LIBPCRE2_NOTE(suggested);
+        LIBQRENCODE_NOTE(suggested);
 
         setlocale(LC_ALL, "");
         log_setup();

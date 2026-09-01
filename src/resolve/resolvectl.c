@@ -18,20 +18,18 @@
 #include "bus-common-errors.h"
 #include "bus-error.h"
 #include "bus-locator.h"
-#include "bus-message-util.h"
 #include "bus-util.h"
 #include "crypto-util.h"
+#include "dlopen-note.h"
 #include "dns-configuration.h"
 #include "dns-domain.h"
 #include "dns-packet.h"
 #include "dns-rr.h"
 #include "errno-list.h"
 #include "errno-util.h"
-#include "escape.h"
 #include "format-ifname.h"
 #include "format-table.h"
 #include "glyph-util.h"
-#include "help-util.h"
 #include "hostname-util.h"
 #include "json-util.h"
 #include "main-func.h"
@@ -48,6 +46,7 @@
 #include "resolvectl.h"
 #include "resolved-def.h"
 #include "resolved-util.h"
+#include "resolve-varlink-util.h"
 #include "set.h"
 #include "socket-netlink.h"
 #include "string-table.h"
@@ -71,6 +70,7 @@ static sd_json_format_flags_t arg_json_format_flags = SD_JSON_FORMAT_OFF;
 static PagerFlags arg_pager_flags = 0;
 bool arg_ifindex_permissive = false; /* If true, don't generate an error if the specified interface index doesn't exist */
 static const char *arg_service_family = NULL;
+static bool arg_service_txt_set = false;
 static bool arg_ask_password = true;
 
 typedef enum RawType {
@@ -95,6 +95,15 @@ STATIC_DESTRUCTOR_REGISTER(arg_ifname, freep);
 STATIC_DESTRUCTOR_REGISTER(arg_set_dns, strv_freep);
 STATIC_DESTRUCTOR_REGISTER(arg_set_domain, strv_freep);
 STATIC_DESTRUCTOR_REGISTER(arg_set_nta, strv_freep);
+
+COMMAND(
+        "resolvectl\0",
+        "Send control commands to the network name resolution manager, or "
+        "resolve domain names, IPv4 and IPv6 addresses, DNS records, and services.",
+        .man_pages = "resolvectl(1)\0",
+        .option_namespace = "resolvectl",
+        .pager_flags = &arg_pager_flags,
+);
 
 typedef enum StatusMode {
         STATUS_ALL,
@@ -278,20 +287,131 @@ static void print_ifindex_comment(int printed_so_far, int ifindex) {
                ansi_grey(), ifname, ansi_normal());
 }
 
-static int resolve_host_error(const char *name, int r, const sd_bus_error *error) {
-        if (sd_bus_error_has_name(error, BUS_ERROR_DNS_NXDOMAIN))
-                return log_error_errno(r, "%s: %s", name, bus_error_message(error, r));
+static int dump_resolve_error_json(const char *name, const char *error_id, sd_json_variant *parameters, int ret) {
+        int r;
 
-        return log_error_errno(r, "%s: resolve call failed: %s", name, bus_error_message(error, r));
+        assert(name);
+        assert(!isempty(error_id));
+
+        _cleanup_(sd_json_variant_unrefp) sd_json_variant *j = sd_json_variant_ref(parameters);
+        r = sd_json_variant_merge_objectbo(
+                        &j,
+                        SD_JSON_BUILD_PAIR_STRING("name", name),
+                        SD_JSON_BUILD_PAIR_STRING("error", error_id));
+        if (r < 0)
+                return r;
+
+        r = sd_json_variant_dump(j, arg_json_format_flags, /* f= */ NULL, /* prefix= */ NULL);
+        if (r < 0)
+                return r;
+
+        return ret;
 }
 
-static int resolve_host(sd_bus *bus, const char *name) {
-        _cleanup_(sd_bus_message_unrefp) sd_bus_message *req = NULL, *reply = NULL;
-        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
-        const char *canonical = NULL;
-        unsigned c = 0;
-        uint64_t flags;
-        usec_t ts;
+static int varlink_log_resolve_error(const char *name, const char *error_id, sd_json_variant *reply, bool warn_missing) {
+        int r;
+
+        assert(name);
+        assert(!isempty(error_id));
+
+        int ret = sd_varlink_error_to_errno(error_id, reply);
+        _cleanup_(resolve_error_done) ResolveError error = {
+                .rcode = _DNS_RCODE_INVALID,
+                .ede_rcode = _DNS_EDE_RCODE_INVALID,
+        };
+        if (reply) {
+                r = dispatch_resolve_error(/* name = */ NULL, reply, SD_JSON_LOG, &error);
+                if (r < 0)
+                        log_debug_errno(r, "Failed to dispatch error JSON, ignoring: %m");
+        }
+
+        if (error.rcode == DNS_RCODE_NXDOMAIN && !warn_missing)
+                return -ENXIO;
+
+        if (sd_json_format_enabled(arg_json_format_flags))
+                return dump_resolve_error_json(
+                                name,
+                                error_id,
+                                reply,
+                                error.rcode == DNS_RCODE_NXDOMAIN ? -ENXIO : ret);
+
+        static const struct {
+                const char *error_id;
+                const char *msg;
+        } error_message_table[] = {
+                { "io.systemd.Resolve.NoNameServers",                 "No appropriate name servers or networks for name found"      },
+                { "io.systemd.Resolve.QueryTimedOut",                 "Query timed out"                                             },
+                { "io.systemd.Resolve.MaxAttemptsReached",            "All attempts to contact name servers or networks failed"     },
+                { "io.systemd.Resolve.InvalidReply",                  "Received invalid reply"                                      },
+                { "io.systemd.Resolve.QueryAborted",                  "Query aborted"                                               },
+                { "io.systemd.Resolve.QueryRefused",                  "DNS query type refused"                                      },
+                { "io.systemd.Resolve.NoTrustAnchor",                 "No suitable trust anchor known"                              },
+                { "io.systemd.Resolve.ResourceRecordTypeUnsupported", "Server does not support requested resource record type"      },
+                { "io.systemd.Resolve.NetworkDown",                   "Network is down"                                             },
+                { "io.systemd.Resolve.NoSource",                      "All suitable resolution sources turned off"                  },
+                { "io.systemd.Resolve.StubLoop",                      "Configured DNS server loops back to us"                      },
+                { "io.systemd.Resolve.ZoneTransfersNotPermitted",     "Zone transfers not permitted via this programming interface" },
+        };
+        FOREACH_ELEMENT(em, error_message_table)
+                if (streq(em->error_id, error_id))
+                        return log_error_errno(ret, "%s: resolve call failed: %s", name, em->msg);
+
+        if (streq(error_id, "io.systemd.Resolve.NoSuchResourceRecord"))
+                return log_error_errno(ret, "%s: resolve call failed: '%s' does not have any RR of the requested type", name, name);
+
+        if (streq(error_id, "io.systemd.Resolve.CNAMELoop"))
+                return log_error_errno(ret, "%s: resolve call failed: CNAME loop detected, or CNAME resolving disabled on '%s'", name, name);
+
+        if (streq(error_id, "io.systemd.Resolve.ServiceNotProvided"))
+                return log_error_errno(ret, "%s: resolve call failed: '%s' does not provide the requested service", name, name);
+
+        if (streq(error_id, "io.systemd.Resolve.InconsistentServiceRecords"))
+                return log_error_errno(ret, "%s: resolve call failed: '%s' does not provide a consistent set of service resource records", name, name);
+
+        _cleanup_free_ char *msg_extended = NULL;
+        if (error.ede_rcode >= 0) {
+                msg_extended = strjoin(" (",
+                                       FORMAT_DNS_EDE_RCODE(error.ede_rcode),
+                                       !isempty(error.ede_msg) ? ": " : "",
+                                       strempty(error.ede_msg),
+                                       ")");
+                if (!msg_extended)
+                        return log_oom();
+        }
+
+        if (streq(error_id, "io.systemd.Resolve.DNSSECValidationFailed"))
+                return log_error_errno(ret, "%s: resolve call failed: DNSSEC validation failed: %s%s", name, error.result, strempty(msg_extended));
+
+        if (error.rcode != _DNS_RCODE_INVALID) {
+                if (error.rcode == DNS_RCODE_NXDOMAIN) {
+                        return log_error_errno(SYNTHETIC_ERRNO(ENXIO), "%s: resolve call failed: Name '%s' not found%s%s",
+                                               name, error.query_string ?: name, error.ede_rcode >= 0 ? ":" : "", strempty(msg_extended));
+                }
+
+                return log_error_errno(ret, "%s: resolve call failed: Could not resolve '%s', server or network returned error: %s%s",
+                                       name, error.query_string ?: name, FORMAT_DNS_RCODE(error.rcode), strempty(msg_extended));
+        }
+
+        return log_error_errno(ret, "%s: resolve call failed: %s", name, error_id);
+}
+
+static int varlink_connect_with_query_timeout(sd_varlink **vl) {
+        int r;
+
+        assert(vl);
+
+        r = sd_varlink_connect_address(vl, "/run/systemd/resolve/io.systemd.Resolve");
+        if (r < 0)
+                return log_error_errno(r, "Failed to connect to service /run/systemd/resolve/io.systemd.Resolve: %m");
+
+        r = sd_varlink_set_relative_timeout(*vl, SD_RESOLVED_QUERY_TIMEOUT_USEC);
+        if (r < 0)
+                return log_error_errno(r, "Failed to set query timeout: %m");
+
+        return 0;
+}
+
+static int resolve_host(const char *name) {
         int r;
 
         assert(name);
@@ -301,99 +421,76 @@ static int resolve_host(sd_bus *bus, const char *name) {
 
         log_debug("Resolving %s (family %s, interface %s).", name, af_to_name(arg_family) ?: "*", isempty(arg_ifname) ? "*" : arg_ifname);
 
-        r = bus_message_new_method_call(bus, &req, bus_resolve_mgr, "ResolveHostname");
+        _cleanup_(sd_varlink_unrefp) sd_varlink *vl = NULL;
+        r = varlink_connect_with_query_timeout(&vl);
         if (r < 0)
-                return bus_log_create_error(r);
+                return r;
 
-        r = sd_bus_message_append(req, "isit", arg_ifindex, name, arg_family, arg_flags);
+        usec_t ts = now(CLOCK_MONOTONIC);
+
+        const char *error_id = NULL;
+        sd_json_variant *v = NULL;
+        r = sd_varlink_callbo(
+                        vl,
+                        "io.systemd.Resolve.ResolveHostname",
+                        &v,
+                        &error_id,
+                        SD_JSON_BUILD_PAIR_STRING("name", name),
+                        JSON_BUILD_PAIR_CONDITION_UNSIGNED(arg_ifindex > 0, "ifindex", arg_ifindex),
+                        JSON_BUILD_PAIR_CONDITION_UNSIGNED(arg_family != AF_UNSPEC, "family", arg_family),
+                        JSON_BUILD_PAIR_UNSIGNED_NON_ZERO("flags", arg_flags));
         if (r < 0)
-                return bus_log_create_error(r);
-
-        ts = now(CLOCK_MONOTONIC);
-
-        r = sd_bus_call(bus, req, SD_RESOLVED_QUERY_TIMEOUT_USEC, &error, &reply);
-        if (r < 0)
-                return resolve_host_error(name, r, &error);
+                return log_error_errno(r, "Failed to issue varlink call: %m");
 
         ts = now(CLOCK_MONOTONIC) - ts;
 
-        r = sd_bus_message_enter_container(reply, 'a', "(iiay)");
+        if (!isempty(error_id))
+                return varlink_log_resolve_error(name, error_id, v, /* warn_missing = */ true);
+
+        _cleanup_(resolve_hostname_reply_done) ResolveHostnameReply reply = {};
+        r = dispatch_resolve_hostname_reply(/* name = */ NULL, v, SD_JSON_LOG, &reply);
         if (r < 0)
-                return bus_log_parse_error(r);
+                return r;
 
-        while ((r = sd_bus_message_enter_container(reply, 'r', "iiay")) > 0) {
+        bool first = true;
+        FOREACH_ARRAY(address, reply.addresses, reply.n_addresses) {
                 _cleanup_free_ char *pretty = NULL;
-                int ifindex, family, k;
-                union in_addr_union a;
-
-                assert_cc(sizeof(int) == sizeof(int32_t));
-
-                r = sd_bus_message_read(reply, "i", &ifindex);
-                if (r < 0)
-                        return bus_log_parse_error(r);
-
-                sd_bus_error_free(&error);
-                r = bus_message_read_in_addr_auto(reply, &error, &family, &a);
-                if (r < 0 && !sd_bus_error_has_name(&error, SD_BUS_ERROR_INVALID_ARGS))
-                        return log_error_errno(r, "%s: systemd-resolved returned invalid result: %s", name, bus_error_message(&error, r));
-
-                r = sd_bus_message_exit_container(reply);
-                if (r < 0)
-                        return bus_log_parse_error(r);
-
-                if (sd_bus_error_has_name(&error, SD_BUS_ERROR_INVALID_ARGS)) {
-                        log_debug_errno(r, "%s: systemd-resolved returned invalid result, ignoring: %s", name, bus_error_message(&error, r));
-                        continue;
-                }
-
-                r = in_addr_ifindex_to_string(family, &a, ifindex, &pretty);
+                r = in_addr_ifindex_to_string(address->family, &address->in_addr.address, address->ifindex, &pretty);
                 if (r < 0)
                         return log_error_errno(r, "Failed to print address for %s: %m", name);
 
-                k = printf("%*s%s %s%s%s",
-                           (int) strlen(name), c == 0 ? name : "", c == 0 ? ":" : " ",
-                           ansi_highlight(), pretty, ansi_normal());
+                int k = printf("%*s%s %s%s%s",
+                               (int) strlen(name),
+                               first ? name : "",
+                               first ? ":" : " ",
+                               ansi_highlight(),
+                               pretty,
+                               ansi_normal());
 
-                print_ifindex_comment(k, ifindex);
+                print_ifindex_comment(k, address->ifindex);
                 fputc('\n', stdout);
 
-                c++;
+                first = false;
         }
-        if (r < 0)
-                return bus_log_parse_error(r);
 
-        r = sd_bus_message_exit_container(reply);
-        if (r < 0)
-                return bus_log_parse_error(r);
-
-        r = sd_bus_message_read(reply, "st", &canonical, &flags);
-        if (r < 0)
-                return bus_log_parse_error(r);
-
-        if (!streq(name, canonical))
+        if (!streq(name, reply.name))
                 printf("%*s%s (%s)\n",
-                       (int) strlen(name), c == 0 ? name : "", c == 0 ? ":" : " ",
-                       canonical);
+                       (int) strlen(name),
+                       reply.n_addresses == 0 ? name : "",
+                       reply.n_addresses == 0 ? ":" : " ",
+                       reply.name);
 
-        if (c == 0)
-                return log_error_errno(SYNTHETIC_ERRNO(ESRCH),
-                                       "%s: no addresses found", name);
+        if (reply.n_addresses == 0)
+                return log_error_errno(SYNTHETIC_ERRNO(ESRCH), "%s: no addresses found", name);
 
-        print_source(flags, ts);
+        print_source(reply.flags, ts);
 
         return 0;
 }
 
-static int resolve_address(sd_bus *bus, int family, const union in_addr_union *address, int ifindex) {
-        _cleanup_(sd_bus_message_unrefp) sd_bus_message *req = NULL, *reply = NULL;
-        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
-        _cleanup_free_ char *pretty = NULL;
-        uint64_t flags;
-        unsigned c = 0;
-        usec_t ts;
+static int resolve_address(int family, const union in_addr_union *address, int ifindex) {
         int r;
 
-        assert(bus);
         assert(IN_SET(family, AF_INET, AF_INET6));
         assert(address);
 
@@ -403,93 +500,72 @@ static int resolve_address(sd_bus *bus, int family, const union in_addr_union *a
         if (ifindex <= 0)
                 ifindex = arg_ifindex;
 
+        _cleanup_free_ char *pretty = NULL;
         r = in_addr_ifindex_to_string(family, address, ifindex, &pretty);
         if (r < 0)
                 return log_oom();
 
         log_debug("Resolving %s.", pretty);
 
-        r = bus_message_new_method_call(bus, &req, bus_resolve_mgr, "ResolveAddress");
+        _cleanup_(sd_varlink_unrefp) sd_varlink *vl = NULL;
+        r = varlink_connect_with_query_timeout(&vl);
         if (r < 0)
-                return bus_log_create_error(r);
+                return r;
 
-        r = sd_bus_message_append(req, "ii", ifindex, family);
+        usec_t ts = now(CLOCK_MONOTONIC);
+
+        const char *error_id = NULL;
+        sd_json_variant *v = NULL;
+        r = sd_varlink_callbo(
+                        vl,
+                        "io.systemd.Resolve.ResolveAddress",
+                        &v,
+                        &error_id,
+                        SD_JSON_BUILD_PAIR_BYTE_ARRAY("address", &address->bytes, FAMILY_ADDRESS_SIZE_SAFE(family)),
+                        SD_JSON_BUILD_PAIR_UNSIGNED("family", family),
+                        JSON_BUILD_PAIR_CONDITION_UNSIGNED(ifindex > 0, "ifindex", ifindex),
+                        JSON_BUILD_PAIR_UNSIGNED_NON_ZERO("flags", arg_flags));
         if (r < 0)
-                return bus_log_create_error(r);
-
-        r = sd_bus_message_append_array(req, 'y', address, FAMILY_ADDRESS_SIZE(family));
-        if (r < 0)
-                return bus_log_create_error(r);
-
-        r = sd_bus_message_append(req, "t", arg_flags);
-        if (r < 0)
-                return bus_log_create_error(r);
-
-        ts = now(CLOCK_MONOTONIC);
-
-        r = sd_bus_call(bus, req, SD_RESOLVED_QUERY_TIMEOUT_USEC, &error, &reply);
-        if (r < 0)
-                return log_error_errno(r, "%s: resolve call failed: %s", pretty, bus_error_message(&error, r));
+                return log_error_errno(r, "Failed to issue varlink call: %m");
 
         ts = now(CLOCK_MONOTONIC) - ts;
 
-        r = sd_bus_message_enter_container(reply, 'a', "(is)");
+        if (!isempty(error_id))
+                return varlink_log_resolve_error(pretty, error_id, v, /* warn_missing = */ true);
+
+        _cleanup_(resolve_address_reply_done) ResolveAddressReply reply = {};
+        r = dispatch_resolve_address_reply(/* name = */ NULL, v, SD_JSON_LOG, &reply);
         if (r < 0)
-                return bus_log_create_error(r);
+                return r;
 
-        while ((r = sd_bus_message_enter_container(reply, 'r', "is")) > 0) {
-                const char *n;
-                int k;
+        bool first = true;
+        FOREACH_ARRAY(name, reply.names, reply.n_names) {
+                int k = printf("%*s%s %s%s%s",
+                               (int) strlen(pretty),
+                               first ? pretty : "",
+                               first ? ":" : " ",
+                               ansi_highlight(),
+                               name->name,
+                               ansi_normal());
 
-                assert_cc(sizeof(int) == sizeof(int32_t));
-
-                r = sd_bus_message_read(reply, "is", &ifindex, &n);
-                if (r < 0)
-                        return r;
-
-                r = sd_bus_message_exit_container(reply);
-                if (r < 0)
-                        return r;
-
-                k = printf("%*s%s %s%s%s",
-                           (int) strlen(pretty), c == 0 ? pretty : "",
-                           c == 0 ? ":" : " ",
-                           ansi_highlight(), n, ansi_normal());
-
-                print_ifindex_comment(k, ifindex);
+                print_ifindex_comment(k, name->ifindex);
                 fputc('\n', stdout);
 
-                c++;
+                first = false;
         }
-        if (r < 0)
-                return bus_log_parse_error(r);
 
-        r = sd_bus_message_exit_container(reply);
-        if (r < 0)
-                return bus_log_parse_error(r);
+        if (reply.n_names == 0)
+                return log_error_errno(SYNTHETIC_ERRNO(ESRCH), "%s: no names found", pretty);
 
-        r = sd_bus_message_read(reply, "t", &flags);
-        if (r < 0)
-                return bus_log_parse_error(r);
-
-        if (c == 0)
-                return log_error_errno(SYNTHETIC_ERRNO(ESRCH),
-                                       "%s: no names found", pretty);
-
-        print_source(flags, ts);
+        print_source(reply.flags, ts);
 
         return 0;
 }
 
-static int output_rr_packet(const void *d, size_t l, int ifindex) {
-        _cleanup_(dns_resource_record_unrefp) DnsResourceRecord *rr = NULL;
+static int output_rr_packet(DnsResourceRecord *rr, int ifindex) {
         int r;
 
-        assert(d || l == 0);
-
-        r = dns_resource_record_new_from_raw(&rr, d, l);
-        if (r < 0)
-                return log_error_errno(r, "Failed to parse RR: %m");
+        assert(rr);
 
         if (sd_json_format_enabled(arg_json_format_flags)) {
                 _cleanup_(sd_json_variant_unrefp) sd_json_variant *j = NULL;
@@ -529,6 +605,8 @@ static int output_rr_packet(const void *d, size_t l, int ifindex) {
 
         return 0;
 }
+
+static DEFINE_POINTER_ARRAY_FREE_FUNC(DnsResourceRecord*, dns_resource_record_unref);
 
 static int idna_candidate(const char *name, char **ret) {
         _cleanup_free_ char *idnafied = NULL;
@@ -572,14 +650,7 @@ static bool single_label_nonsynthetic(const char *name) {
         return !streq(name, first_label);
 }
 
-static int resolve_record(sd_bus *bus, const char *name, uint16_t class, uint16_t type, bool warn_missing) {
-        _cleanup_(sd_bus_message_unrefp) sd_bus_message *req = NULL, *reply = NULL;
-        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
-        _cleanup_free_ char *idnafied = NULL;
-        bool needs_authentication = false;
-        unsigned n = 0;
-        uint64_t flags;
-        usec_t ts;
+static int resolve_record(const char *name, uint16_t class, uint16_t type, bool warn_missing) {
         int r;
 
         assert(name);
@@ -590,6 +661,7 @@ static int resolve_record(sd_bus *bus, const char *name, uint16_t class, uint16_
                 log_notice("(Note that search domains are not appended when --type= is specified. "
                            "Please specify fully qualified domain names, or remove --type= switch from invocation in order to request regular hostname resolution.)");
 
+        _cleanup_free_ char *idnafied = NULL;
         r = idna_candidate(name, &idnafied);
         if (r < 0)
                 return r;
@@ -598,85 +670,94 @@ static int resolve_record(sd_bus *bus, const char *name, uint16_t class, uint16_
                            "Please specify translated domain names — i.e. '%s' — when resolving raw records, or remove --type= switch from invocation in order to request regular hostname resolution.",
                            idnafied);
 
-        r = bus_message_new_method_call(bus, &req, bus_resolve_mgr, "ResolveRecord");
+        _cleanup_(sd_varlink_unrefp) sd_varlink *vl = NULL;
+        r = varlink_connect_with_query_timeout(&vl);
         if (r < 0)
-                return bus_log_create_error(r);
-
-        r = sd_bus_message_append(req, "isqqt", arg_ifindex, name, class, type, arg_flags);
-        if (r < 0)
-                return bus_log_create_error(r);
-
-        ts = now(CLOCK_MONOTONIC);
-
-        r = sd_bus_call(bus, req, SD_RESOLVED_QUERY_TIMEOUT_USEC, &error, &reply);
-        if (r < 0) {
-                if (warn_missing || r != -ENXIO)
-                        log_error("%s: resolve call failed: %s", name, bus_error_message(&error, r));
                 return r;
-        }
+
+        usec_t ts = now(CLOCK_MONOTONIC);
+
+        const char *error_id = NULL;
+        sd_json_variant *v = NULL;
+        r = sd_varlink_callbo(
+                        vl,
+                        "io.systemd.Resolve.ResolveRecord",
+                        &v,
+                        &error_id,
+                        SD_JSON_BUILD_PAIR_STRING("name", name),
+                        SD_JSON_BUILD_PAIR_UNSIGNED("type", type),
+                        JSON_BUILD_PAIR_CONDITION_UNSIGNED(arg_ifindex > 0, "ifindex", arg_ifindex),
+                        JSON_BUILD_PAIR_UNSIGNED_NON_ZERO("class", class),
+                        JSON_BUILD_PAIR_UNSIGNED_NON_ZERO("flags", arg_flags));
+        if (r < 0)
+                return log_error_errno(r, "Failed to issue varlink call: %m");
 
         ts = now(CLOCK_MONOTONIC) - ts;
 
-        r = sd_bus_message_enter_container(reply, 'a', "(iqqay)");
-        if (r < 0)
-                return bus_log_parse_error(r);
+        if (!isempty(error_id)) {
+                if (streq(error_id, "io.systemd.Resolve.ResourceRecordTypeInvalidForQuery"))
+                        return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Specified resource record type %" PRIu16 " may not be used in a query", type);
 
-        while ((r = sd_bus_message_enter_container(reply, 'r', "iqqay")) > 0) {
-                uint16_t c, t;
-                int ifindex;
-                const void *d;
-                size_t l;
+                if (streq(error_id, "io.systemd.Resolve.ResourceRecordTypeObsolete"))
+                        return log_error_errno(SYNTHETIC_ERRNO(EOPNOTSUPP), "Specified DNS resource record type %" PRIu16 " is obsolete", type);
 
-                assert_cc(sizeof(int) == sizeof(int32_t));
-
-                r = sd_bus_message_read(reply, "iqq", &ifindex, &c, &t);
-                if (r < 0)
-                        return bus_log_parse_error(r);
-
-                r = sd_bus_message_read_array(reply, 'y', &d, &l);
-                if (r < 0)
-                        return bus_log_parse_error(r);
-
-                r = sd_bus_message_exit_container(reply);
-                if (r < 0)
-                        return bus_log_parse_error(r);
-
-                if (arg_raw == RAW_PACKET) {
-                        uint64_t u64 = htole64(l);
-
-                        fwrite(&u64, sizeof(u64), 1, stdout);
-                        fwrite(d, 1, l, stdout);
-                } else {
-                        r = output_rr_packet(d, l, ifindex);
-                        if (r < 0)
-                                return r;
-                }
-
-                if (dns_type_needs_authentication(t))
-                        needs_authentication = true;
-
-                n++;
+                return varlink_log_resolve_error(name, error_id, v, warn_missing);
         }
-        if (r < 0)
-                return bus_log_parse_error(r);
 
-        r = sd_bus_message_exit_container(reply);
+        _cleanup_(resolve_record_reply_done) ResolveRecordReply reply = {};
+        r = dispatch_resolve_record_reply(/* name = */ NULL, v, SD_JSON_LOG, &reply);
         if (r < 0)
-                return bus_log_parse_error(r);
+                return r;
 
-        r = sd_bus_message_read(reply, "t", &flags);
-        if (r < 0)
-                return bus_log_parse_error(r);
-
-        if (n == 0) {
+        if (reply.n_records == 0) {
                 if (warn_missing)
                         log_error("%s: no records found", name);
                 return -ESRCH;
         }
 
-        print_source(flags, ts);
+        DnsResourceRecord **rrs = new0(DnsResourceRecord*, reply.n_records);
+        size_t n_rrs = reply.n_records;
+        if (!rrs)
+                return log_oom();
+        CLEANUP_ARRAY(rrs, n_rrs, dns_resource_record_unref_array);
 
-        if ((flags & SD_RESOLVED_AUTHENTICATED) == 0 && needs_authentication) {
+        bool json = sd_json_format_enabled(arg_json_format_flags);
+        bool needs_authentication = false;
+        FOREACH_ARRAY(record, reply.records, reply.n_records) {
+                size_t i = record - reply.records;
+
+                r = dns_resource_record_new_from_raw(&rrs[i], record->raw.iov_base, record->raw.iov_len);
+                if (r < 0)
+                        return log_error_errno(r, "Failed to parse RR: %m");
+
+                if (dns_type_needs_authentication(rrs[i]->key->type)) {
+                        needs_authentication = true;
+
+                        if (json && !FLAGS_SET(reply.flags, SD_RESOLVED_AUTHENTICATED))
+                                return log_error_errno(SYNTHETIC_ERRNO(EKEYREJECTED),
+                                                       "Refusing to output unauthenticated DNS records that require "
+                                                       "authentication in JSON format.");
+                }
+        }
+
+        FOREACH_ARRAY(record, reply.records, reply.n_records) {
+                size_t i = record - reply.records;
+
+                if (arg_raw == RAW_PACKET) {
+                        uint64_t u64 = htole64(record->raw.iov_len);
+
+                        fwrite(&u64, sizeof(u64), 1, stdout);
+                        fwrite(record->raw.iov_base, 1, record->raw.iov_len, stdout);
+                } else {
+                        r = output_rr_packet(rrs[i], record->ifindex);
+                        if (r < 0)
+                                return r;
+                }
+        }
+
+        print_source(reply.flags, ts);
+
+        if ((reply.flags & SD_RESOLVED_AUTHENTICATED) == 0 && needs_authentication) {
                 fflush(stdout);
 
                 fprintf(stderr, "\n%s"
@@ -691,12 +772,11 @@ static int resolve_record(sd_bus *bus, const char *name, uint16_t class, uint16_
         return 0;
 }
 
-static int resolve_rfc4501(sd_bus *bus, const char *name) {
+static int resolve_rfc4501(const char *name) {
         uint16_t type = 0, class = 0;
         const char *p, *q, *n;
         int r;
 
-        assert(bus);
         assert(name);
         assert(startswith(name, "dns:"));
 
@@ -794,58 +874,48 @@ static int resolve_rfc4501(sd_bus *bus, const char *name) {
         if (type == 0)
                 type = arg_type ?: DNS_TYPE_A;
 
-        return resolve_record(bus, n, class, type, true);
+        return resolve_record(n, class, type, true);
 
 invalid:
         return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
                                "Invalid DNS URI: %s", name);
 }
 
-VERB(verb_query, "query", "HOSTNAME|ADDRESS…", 2, VERB_ANY, 0,
+VERB(verb_query, "query", "HOSTNAME|ADDRESS…\0", 2, VERB_ANY, 0,
      "Resolve domain names, IPv4 and IPv6 addresses");
 static int verb_query(int argc, char *argv[], uintptr_t _data, void *userdata) {
-        _cleanup_(sd_bus_flush_close_unrefp) sd_bus *bus = NULL;
         int ret = 0, r;
-
-        r = acquire_bus(&bus);
-        if (r < 0)
-                return r;
 
         if (arg_type != 0)
                 STRV_FOREACH(p, strv_skip(argv, 1))
-                        RET_GATHER(ret, resolve_record(bus, *p, arg_class, arg_type, true));
+                        RET_GATHER(ret, resolve_record(*p, arg_class, arg_type, true));
 
         else
                 STRV_FOREACH(p, strv_skip(argv, 1)) {
                         if (startswith(*p, "dns:"))
-                                RET_GATHER(ret, resolve_rfc4501(bus, *p));
+                                RET_GATHER(ret, resolve_rfc4501(*p));
                         else {
                                 int family, ifindex;
                                 union in_addr_union a;
 
+                                if (arg_raw != RAW_NONE)
+                                        return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
+                                                               "--raw may only be combined with --type= or dns: URIs.");
+
                                 r = in_addr_ifindex_from_string_auto(*p, &family, &a, &ifindex);
                                 if (r >= 0)
-                                        RET_GATHER(ret, resolve_address(bus, family, &a, ifindex));
+                                        RET_GATHER(ret, resolve_address(family, &a, ifindex));
                                 else
-                                        RET_GATHER(ret, resolve_host(bus, *p));
+                                        RET_GATHER(ret, resolve_host(*p));
                         }
                 }
 
         return ret;
 }
 
-static int resolve_service(sd_bus *bus, const char *name, const char *type, const char *domain) {
-        const char *canonical_name, *canonical_type, *canonical_domain;
-        _cleanup_(sd_bus_message_unrefp) sd_bus_message *req = NULL, *reply = NULL;
-        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
-        size_t indent, sz;
-        uint64_t flags;
-        const char *p;
-        unsigned c;
-        usec_t ts;
+static int resolve_service(const char *name, const char *type, const char *domain, uint64_t flags) {
         int r;
 
-        assert(bus);
         assert(domain);
 
         name = empty_to_null(name);
@@ -858,141 +928,83 @@ static int resolve_service(sd_bus *bus, const char *name, const char *type, cons
         else
                 log_debug("Resolving service type %s (family %s, interface %s).", domain, af_to_name(arg_family) ?: "*", isempty(arg_ifname) ? "*" : arg_ifname);
 
-        r = bus_message_new_method_call(bus, &req, bus_resolve_mgr, "ResolveService");
+        _cleanup_(sd_varlink_unrefp) sd_varlink *vl = NULL;
+        r = varlink_connect_with_query_timeout(&vl);
         if (r < 0)
-                return bus_log_create_error(r);
+                return r;
 
-        r = sd_bus_message_append(req, "isssit", arg_ifindex, name, type, domain, arg_family, arg_flags);
+        usec_t ts = now(CLOCK_MONOTONIC);
+
+        const char *error_id = NULL;
+        sd_json_variant *v = NULL;
+        r = sd_varlink_callbo(
+                        vl,
+                        "io.systemd.Resolve.ResolveService",
+                        &v,
+                        &error_id,
+                        SD_JSON_BUILD_PAIR_STRING("domain", domain),
+                        JSON_BUILD_PAIR_STRING_NON_EMPTY("name", name),
+                        JSON_BUILD_PAIR_STRING_NON_EMPTY("type", type),
+                        JSON_BUILD_PAIR_CONDITION_UNSIGNED(arg_ifindex > 0, "ifindex", arg_ifindex),
+                        JSON_BUILD_PAIR_CONDITION_UNSIGNED(arg_family != AF_UNSPEC, "family", arg_family),
+                        JSON_BUILD_PAIR_UNSIGNED_NON_ZERO("flags", flags));
         if (r < 0)
-                return bus_log_create_error(r);
-
-        ts = now(CLOCK_MONOTONIC);
-
-        r = sd_bus_call(bus, req, SD_RESOLVED_QUERY_TIMEOUT_USEC, &error, &reply);
-        if (r < 0)
-                return log_error_errno(r, "Resolve call failed: %s", bus_error_message(&error, r));
+                return log_error_errno(r, "Failed to issue varlink call: %m");
 
         ts = now(CLOCK_MONOTONIC) - ts;
 
-        r = sd_bus_message_enter_container(reply, 'a', "(qqqsa(iiay)s)");
+        if (!isempty(error_id))
+                return varlink_log_resolve_error(domain, error_id, v, /* warn_missing = */ true);
+
+        _cleanup_(resolve_service_reply_done) ResolveServiceReply reply = {};
+        r = dispatch_resolve_service_reply(/* name = */ NULL, v, SD_JSON_LOG, &reply);
         if (r < 0)
-                return bus_log_parse_error(r);
+                return r;
 
-        indent =
-                (name ? strlen(name) + 1 : 0) +
-                (type ? strlen(type) + 1 : 0) +
-                strlen(domain) + 2;
+        size_t indent = (name ? strlen(name) + 1 : 0) +
+                        (type ? strlen(type) + 1 : 0) +
+                        strlen(domain) + 2;
 
-        c = 0;
-        while ((r = sd_bus_message_enter_container(reply, 'r', "qqqsa(iiay)s")) > 0) {
-                uint16_t priority, weight, port;
-                const char *hostname, *canonical;
-
-                r = sd_bus_message_read(reply, "qqqs", &priority, &weight, &port, &hostname);
-                if (r < 0)
-                        return bus_log_parse_error(r);
-
+        bool first = true;
+        FOREACH_ARRAY(service, reply.services, reply.n_services) {
                 if (name)
-                        printf("%*s%s", (int) strlen(name), c == 0 ? name : "", c == 0 ? "/" : " ");
+                        printf("%*s%s", (int) strlen(name), first ? name : "", first ? "/" : " ");
                 if (type)
-                        printf("%*s%s", (int) strlen(type), c == 0 ? type : "", c == 0 ? "/" : " ");
+                        printf("%*s%s", (int) strlen(type), first ? type : "", first ? "/" : " ");
 
                 printf("%*s%s %s:%u [priority=%u, weight=%u]\n",
-                       (int) strlen(domain), c == 0 ? domain : "",
-                       c == 0 ? ":" : " ",
-                       hostname, port,
-                       priority, weight);
+                       (int) strlen(domain),
+                       first ? domain : "",
+                       first ? ":" : " ",
+                       service->hostname,
+                       service->port,
+                       service->priority,
+                       service->weight);
 
-                r = sd_bus_message_enter_container(reply, 'a', "(iiay)");
-                if (r < 0)
-                        return bus_log_parse_error(r);
-
-                while ((r = sd_bus_message_enter_container(reply, 'r', "iiay")) > 0) {
+                FOREACH_ARRAY(address, service->addresses, service->n_addresses) {
                         _cleanup_free_ char *pretty = NULL;
-                        int ifindex, family, k;
-                        union in_addr_union a;
-
-                        assert_cc(sizeof(int) == sizeof(int32_t));
-
-                        r = sd_bus_message_read(reply, "i", &ifindex);
-                        if (r < 0)
-                                return bus_log_parse_error(r);
-
-                        sd_bus_error_free(&error);
-                        r = bus_message_read_in_addr_auto(reply, &error, &family, &a);
-                        if (r < 0 && !sd_bus_error_has_name(&error, SD_BUS_ERROR_INVALID_ARGS))
-                                return log_error_errno(r, "%s: systemd-resolved returned invalid result: %s", name, bus_error_message(&error, r));
-
-                        r = sd_bus_message_exit_container(reply);
-                        if (r < 0)
-                                return bus_log_parse_error(r);
-
-                        if (sd_bus_error_has_name(&error, SD_BUS_ERROR_INVALID_ARGS)) {
-                                log_debug_errno(r, "%s: systemd-resolved returned invalid result, ignoring: %s", name, bus_error_message(&error, r));
-                                continue;
-                        }
-
-                        r = in_addr_ifindex_to_string(family, &a, ifindex, &pretty);
+                        r = in_addr_ifindex_to_string(address->family, &address->in_addr.address, address->ifindex, &pretty);
                         if (r < 0)
                                 return log_error_errno(r, "Failed to print address for %s: %m", name);
 
-                        k = printf("%*s%s", (int) indent, "", pretty);
-                        print_ifindex_comment(k, ifindex);
+                        int k = printf("%*s%s", (int) indent, "", pretty);
+
+                        print_ifindex_comment(k, address->ifindex);
                         fputc('\n', stdout);
                 }
-                if (r < 0)
-                        return bus_log_parse_error(r);
 
-                r = sd_bus_message_exit_container(reply);
-                if (r < 0)
-                        return bus_log_parse_error(r);
+                if (service->canonical_name && !streq_ptr(service->hostname, service->canonical_name))
+                        printf("%*s(%s)\n", (int) indent, "", service->canonical_name);
 
-                r = sd_bus_message_read(reply, "s", &canonical);
-                if (r < 0)
-                        return bus_log_parse_error(r);
-
-                if (!streq(hostname, canonical))
-                        printf("%*s(%s)\n", (int) indent, "", canonical);
-
-                r = sd_bus_message_exit_container(reply);
-                if (r < 0)
-                        return bus_log_parse_error(r);
-
-                c++;
+                first = false;
         }
-        if (r < 0)
-                return bus_log_parse_error(r);
 
-        r = sd_bus_message_exit_container(reply);
-        if (r < 0)
-                return bus_log_parse_error(r);
+        STRV_FOREACH(p, reply.txt)
+                printf("%*s%s\n", (int) indent, "", *p);
 
-        r = sd_bus_message_enter_container(reply, 'a', "ay");
-        if (r < 0)
-                return bus_log_parse_error(r);
-
-        while ((r = sd_bus_message_read_array(reply, 'y', (const void**) &p, &sz)) > 0) {
-                _cleanup_free_ char *escaped = NULL;
-
-                escaped = cescape_length(p, sz);
-                if (!escaped)
-                        return log_oom();
-
-                printf("%*s%s\n", (int) indent, "", escaped);
-        }
-        if (r < 0)
-                return bus_log_parse_error(r);
-
-        r = sd_bus_message_exit_container(reply);
-        if (r < 0)
-                return bus_log_parse_error(r);
-
-        r = sd_bus_message_read(reply, "ssst", &canonical_name, &canonical_type, &canonical_domain, &flags);
-        if (r < 0)
-                return bus_log_parse_error(r);
-
-        canonical_name = empty_to_null(canonical_name);
-        canonical_type = empty_to_null(canonical_type);
+        const char *canonical_name = empty_to_null(reply.canonical.name);
+        const char *canonical_type = empty_to_null(reply.canonical.type);
+        const char *canonical_domain = reply.canonical.domain;
 
         if (!streq_ptr(name, canonical_name) ||
             !streq_ptr(type, canonical_type) ||
@@ -1008,37 +1020,34 @@ static int resolve_service(sd_bus *bus, const char *name, const char *type, cons
                 printf("%s)\n", canonical_domain);
         }
 
-        print_source(flags, ts);
+        print_source(reply.flags, ts);
 
         return 0;
 }
 
-VERB(verb_service, "service", "[[NAME] TYPE] DOMAIN", 2, 4, 0,
+VERB(verb_service, "service", "[[NAME] TYPE] DOMAIN\0", 2, 4, 0,
      "Resolve service (SRV)");
 static int verb_service(int argc, char *argv[], uintptr_t _data, void *userdata) {
-        _cleanup_(sd_bus_flush_close_unrefp) sd_bus *bus = NULL;
-        int r;
-
-        r = acquire_bus(&bus);
-        if (r < 0)
-                return r;
+        uint64_t flags = arg_flags;
 
         if (sd_json_format_enabled(arg_json_format_flags))
                 return log_error_errno(SYNTHETIC_ERRNO(EOPNOTSUPP), "Use --json=pretty with --type= to acquire resource record information in JSON format.");
 
+        if (argc < 4 && !arg_service_txt_set)
+                flags |= SD_RESOLVED_NO_TXT;
+
         if (argc == 2)
-                return resolve_service(bus, NULL, NULL, argv[1]);
-        else if (argc == 3)
-                return resolve_service(bus, NULL, argv[1], argv[2]);
-        else
-                return resolve_service(bus, argv[1], argv[2], argv[3]);
+                return resolve_service(NULL, NULL, argv[1], flags);
+        if (argc == 3)
+                return resolve_service(NULL, argv[1], argv[2], flags);
+
+        return resolve_service(argv[1], argv[2], argv[3], flags);
 }
 
 #if HAVE_OPENSSL
-static int resolve_openpgp(sd_bus *bus, const char *address) {
+static int resolve_openpgp(const char *address) {
         int r;
 
-        assert(bus);
         assert(address);
 
         const char *domain = strrchr(address, '@');
@@ -1069,7 +1078,6 @@ static int resolve_openpgp(sd_bus *bus, const char *address) {
         log_debug("Looking up \"%s\".", full);
 
         r = resolve_record(
-                        bus,
                         full,
                         arg_class ?: DNS_CLASS_IN,
                         arg_type ?: DNS_TYPE_OPENPGPKEY,
@@ -1089,7 +1097,6 @@ static int resolve_openpgp(sd_bus *bus, const char *address) {
         log_debug("Looking up \"%s\".", full);
 
         return resolve_record(
-                        bus,
                         full,
                         arg_class ?: DNS_CLASS_IN,
                         arg_type ?: DNS_TYPE_OPENPGPKEY,
@@ -1097,22 +1104,17 @@ static int resolve_openpgp(sd_bus *bus, const char *address) {
 }
 #endif
 
-VERB(verb_openpgp, "openpgp", "EMAIL@DOMAIN…", 2, VERB_ANY, 0,
+VERB(verb_openpgp, "openpgp", "EMAIL@DOMAIN…\0", 2, VERB_ANY, 0,
      "Query OpenPGP public key");
 static int verb_openpgp(int argc, char *argv[], uintptr_t _data, void *userdata) {
 #if HAVE_OPENSSL
-        _cleanup_(sd_bus_flush_close_unrefp) sd_bus *bus = NULL;
-        int r, ret = 0;
+        int ret = 0;
 
-        r = acquire_bus(&bus);
-        if (r < 0)
-                return r;
-
-        if (sd_json_format_enabled(arg_json_format_flags))
-                return log_error_errno(SYNTHETIC_ERRNO(EOPNOTSUPP), "Use --json=pretty with --type= to acquire resource record information in JSON format.");
+        if (!IN_SET(arg_type, 0, DNS_TYPE_OPENPGPKEY))
+                return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "The openpgp command may only be combined with --type=OPENPGPKEY.");
 
         STRV_FOREACH(p, strv_skip(argv, 1))
-                RET_GATHER(ret, resolve_openpgp(bus, *p));
+                RET_GATHER(ret, resolve_openpgp(*p));
 
         return ret;
 #else
@@ -1120,13 +1122,12 @@ static int verb_openpgp(int argc, char *argv[], uintptr_t _data, void *userdata)
 #endif
 }
 
-static int resolve_tlsa(sd_bus *bus, const char *family, const char *address) {
+static int resolve_tlsa(const char *family, const char *address) {
         const char *port;
         uint16_t port_num = 443;
         _cleanup_free_ char *full = NULL;
         int r;
 
-        assert(bus);
         assert(address);
 
         port = strrchr(address, ':');
@@ -1147,7 +1148,7 @@ static int resolve_tlsa(sd_bus *bus, const char *family, const char *address) {
 
         log_debug("Looking up \"%s\".", full);
 
-        return resolve_record(bus, full,
+        return resolve_record(full,
                               arg_class ?: DNS_CLASS_IN,
                               arg_type ?: DNS_TYPE_TLSA, true);
 }
@@ -1156,22 +1157,17 @@ static bool service_family_is_valid(const char *s) {
         return STR_IN_SET(s, "tcp", "udp", "sctp");
 }
 
-VERB(verb_tlsa, "tlsa", "DOMAIN[:PORT]…", 2, VERB_ANY, 0,
+VERB(verb_tlsa, "tlsa", "DOMAIN[:PORT]…\0", 2, VERB_ANY, 0,
      "Query TLS public key");
 static int verb_tlsa(int argc, char *argv[], uintptr_t _data, void *userdata) {
-        _cleanup_(sd_bus_flush_close_unrefp) sd_bus *bus = NULL;
         const char *family = "tcp";
         char **args;
-        int r, ret = 0;
+        int ret = 0;
 
         assert(argc >= 2);
 
-        r = acquire_bus(&bus);
-        if (r < 0)
-                return r;
-
-        if (sd_json_format_enabled(arg_json_format_flags))
-                return log_error_errno(SYNTHETIC_ERRNO(EOPNOTSUPP), "Use --json=pretty with --type= to acquire resource record information in JSON format.");
+        if (!IN_SET(arg_type, 0, DNS_TYPE_TLSA))
+                return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "The tlsa command may only be combined with --type=TLSA.");
 
         if (service_family_is_valid(argv[1])) {
                 family = argv[1];
@@ -1179,8 +1175,11 @@ static int verb_tlsa(int argc, char *argv[], uintptr_t _data, void *userdata) {
         } else
                 args = strv_skip(argv, 1);
 
+        if (strv_isempty(args))
+                return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "The tlsa command requires at least one domain.");
+
         STRV_FOREACH(p, args)
-                RET_GATHER(ret, resolve_tlsa(bus, family, *p));
+                RET_GATHER(ret, resolve_tlsa(family, *p));
 
         return ret;
 }
@@ -1529,6 +1528,7 @@ static int print_configuration(DNSConfiguration *configuration, StatusMode mode,
         int r;
 
         assert(configuration);
+        POINTER_MAY_BE_NULL(empty_line);
 
         pager_open(arg_pager_flags);
 
@@ -1770,7 +1770,7 @@ static int status_ifindex(int ifindex, StatusMode mode) {
         return status_full(mode, STRV_MAKE(ifname));
 }
 
-VERB(verb_status, "status", "[LINK…]", VERB_ANY, VERB_ANY, VERB_DEFAULT,
+VERB(verb_status, "status", "[LINK…]\0", VERB_ANY, VERB_ANY, VERB_DEFAULT,
      "Show link and server status");
 static int verb_status(int argc, char *argv[], uintptr_t _data, void *userdata) {
         return status_full(STATUS_ALL, strv_skip(argv, 1));
@@ -1969,37 +1969,39 @@ static int verb_reset_statistics(int argc, char *argv[], uintptr_t _data, void *
 VERB(verb_flush_caches, "flush-caches", NULL, VERB_ANY, 1, 0,
      "Flush all local DNS caches");
 static int verb_flush_caches(int argc, char *argv[], uintptr_t _data, void *userdata) {
-        _cleanup_(sd_bus_flush_close_unrefp) sd_bus *bus = NULL;
-        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
         int r;
 
-        r = acquire_bus(&bus);
-        if (r < 0)
-                return r;
+        (void) polkit_agent_open_if_enabled(BUS_TRANSPORT_LOCAL, arg_ask_password);
 
-        r = bus_call_method(bus, bus_resolve_mgr, "FlushCaches", &error, NULL, NULL);
+        _cleanup_(sd_varlink_unrefp) sd_varlink *vl = NULL;
+        r = sd_varlink_connect_address(&vl, "/run/systemd/resolve/io.systemd.Resolve.Monitor");
         if (r < 0)
-                return log_error_errno(r, "Failed to flush caches: %s", bus_error_message(&error, r));
+                return log_error_errno(r, "Failed to connect to /run/systemd/resolve/io.systemd.Resolve.Monitor: %m");
 
-        return 0;
+        return varlink_callbo_and_log(
+                        vl,
+                        "io.systemd.Resolve.Monitor.FlushCaches",
+                        /* reply= */ NULL,
+                        SD_JSON_BUILD_PAIR_BOOLEAN("allowInteractiveAuthentication", arg_ask_password));
 }
 
 VERB(verb_reset_server_features, "reset-server-features", NULL, VERB_ANY, 1, 0,
      "Forget learnt DNS server feature levels");
 static int verb_reset_server_features(int argc, char *argv[], uintptr_t _data, void *userdata) {
-        _cleanup_(sd_bus_flush_close_unrefp) sd_bus *bus = NULL;
-        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
         int r;
 
-        r = acquire_bus(&bus);
-        if (r < 0)
-                return r;
+        (void) polkit_agent_open_if_enabled(BUS_TRANSPORT_LOCAL, arg_ask_password);
 
-        r = bus_call_method(bus, bus_resolve_mgr, "ResetServerFeatures", &error, NULL, NULL);
+        _cleanup_(sd_varlink_unrefp) sd_varlink *vl = NULL;
+        r = sd_varlink_connect_address(&vl, "/run/systemd/resolve/io.systemd.Resolve.Monitor");
         if (r < 0)
-                return log_error_errno(r, "Failed to reset server features: %s", bus_error_message(&error, r));
+                return log_error_errno(r, "Failed to connect to /run/systemd/resolve/io.systemd.Resolve.Monitor: %m");
 
-        return 0;
+        return varlink_callbo_and_log(
+                        vl,
+                        "io.systemd.Resolve.Monitor.ResetServerFeatures",
+                        /* reply= */ NULL,
+                        SD_JSON_BUILD_PAIR_BOOLEAN("allowInteractiveAuthentication", arg_ask_password));
 }
 
 static int print_question(char prefix, const char *color, sd_json_variant *question) {
@@ -2385,7 +2387,7 @@ static int dump_cache_scope(sd_json_variant *scope) {
 
         static const sd_json_dispatch_field dispatch_table[] = {
                 { "protocol",     SD_JSON_VARIANT_STRING,        sd_json_dispatch_const_string,  offsetof(struct scope_info, protocol),          SD_JSON_MANDATORY },
-                { "family",       _SD_JSON_VARIANT_TYPE_INVALID, sd_json_dispatch_int,           offsetof(struct scope_info, family),            0                 },
+                { "family",       _SD_JSON_VARIANT_TYPE_INVALID, json_dispatch_address_family,   offsetof(struct scope_info, family),            SD_JSON_RELAX     },
                 { "ifindex",      _SD_JSON_VARIANT_TYPE_INVALID, json_dispatch_ifindex,          offsetof(struct scope_info, ifindex),           SD_JSON_RELAX     },
                 { "ifname",       SD_JSON_VARIANT_STRING,        sd_json_dispatch_const_string,  offsetof(struct scope_info, ifname),            0                 },
                 { "cache",        SD_JSON_VARIANT_ARRAY,         sd_json_dispatch_variant_noref, offsetof(struct scope_info, cache),             SD_JSON_MANDATORY },
@@ -2656,7 +2658,7 @@ static int verb_show_server_state(int argc, char *argv[], uintptr_t _data, void 
         return sd_json_variant_dump(d, arg_json_format_flags, NULL, NULL);
 }
 
-VERB(verb_dns, "dns", "[LINK [SERVER…]]", VERB_ANY, VERB_ANY, 0,
+VERB(verb_dns, "dns", "[LINK [SERVER…]]\0", VERB_ANY, VERB_ANY, 0,
      "Get/set per-interface DNS server address");
 static int verb_dns(int argc, char *argv[], uintptr_t _data, void *userdata) {
         _cleanup_(sd_bus_flush_close_unrefp) sd_bus *bus = NULL;
@@ -2743,7 +2745,7 @@ static int call_domain(sd_bus *bus, char **domain, const BusLocator *locator, sd
         return sd_bus_call(bus, req, 0, error, NULL);
 }
 
-VERB(verb_domain, "domain", "[LINK [DOMAIN…]]", VERB_ANY, VERB_ANY, 0,
+VERB(verb_domain, "domain", "[LINK [DOMAIN…]]\0", VERB_ANY, VERB_ANY, 0,
      "Get/set per-interface search domain");
 static int verb_domain(int argc, char *argv[], uintptr_t _data, void *userdata) {
         _cleanup_(sd_bus_flush_close_unrefp) sd_bus *bus = NULL;
@@ -2784,7 +2786,7 @@ static int verb_domain(int argc, char *argv[], uintptr_t _data, void *userdata) 
         return 0;
 }
 
-VERB(verb_default_route, "default-route", "[LINK [BOOL]]", VERB_ANY, 3, 0,
+VERB(verb_default_route, "default-route", "[LINK [BOOL]]\0", VERB_ANY, 3, 0,
      "Get/set per-interface default route flag");
 static int verb_default_route(int argc, char *argv[], uintptr_t _data, void *userdata) {
         _cleanup_(sd_bus_flush_close_unrefp) sd_bus *bus = NULL;
@@ -2830,7 +2832,7 @@ static int verb_default_route(int argc, char *argv[], uintptr_t _data, void *use
         return 0;
 }
 
-VERB(verb_llmnr, "llmnr", "[LINK [MODE]]", VERB_ANY, 3, 0,
+VERB(verb_llmnr, "llmnr", "[LINK [MODE]]\0", VERB_ANY, 3, 0,
      "Get/set per-interface LLMNR mode");
 static int verb_llmnr(int argc, char *argv[], uintptr_t _data, void *userdata) {
         _cleanup_(sd_bus_flush_close_unrefp) sd_bus *bus = NULL;
@@ -2890,7 +2892,7 @@ static int verb_llmnr(int argc, char *argv[], uintptr_t _data, void *userdata) {
         return 0;
 }
 
-VERB(verb_mdns, "mdns", "[LINK [MODE]]", VERB_ANY, 3, 0,
+VERB(verb_mdns, "mdns", "[LINK [MODE]]\0", VERB_ANY, 3, 0,
      "Get/set per-interface MulticastDNS mode");
 static int verb_mdns(int argc, char *argv[], uintptr_t _data, void *userdata) {
         _cleanup_(sd_bus_flush_close_unrefp) sd_bus *bus = NULL;
@@ -2956,7 +2958,7 @@ static int verb_mdns(int argc, char *argv[], uintptr_t _data, void *userdata) {
         return 0;
 }
 
-VERB(verb_dns_over_tls, "dnsovertls", "[LINK [MODE]]", VERB_ANY, 3, 0,
+VERB(verb_dns_over_tls, "dnsovertls", "[LINK [MODE]]\0", VERB_ANY, 3, 0,
      "Get/set per-interface DNS-over-TLS mode");
 static int verb_dns_over_tls(int argc, char *argv[], uintptr_t _data, void *userdata) {
         _cleanup_(sd_bus_flush_close_unrefp) sd_bus *bus = NULL;
@@ -3004,7 +3006,7 @@ static int verb_dns_over_tls(int argc, char *argv[], uintptr_t _data, void *user
         return 0;
 }
 
-VERB(verb_dnssec, "dnssec", "[LINK [MODE]]", VERB_ANY, 3, 0,
+VERB(verb_dnssec, "dnssec", "[LINK [MODE]]\0", VERB_ANY, 3, 0,
      "Get/set per-interface DNSSEC mode");
 static int verb_dnssec(int argc, char *argv[], uintptr_t _data, void *userdata) {
         _cleanup_(sd_bus_flush_close_unrefp) sd_bus *bus = NULL;
@@ -3067,7 +3069,7 @@ static int call_nta(sd_bus *bus, char **nta, const BusLocator *locator,  sd_bus_
         return sd_bus_call(bus, req, 0, error, NULL);
 }
 
-VERB(verb_nta, "nta", "[LINK [DOMAIN…]]", VERB_ANY, VERB_ANY, 0,
+VERB(verb_nta, "nta", "[LINK [DOMAIN…]]\0", VERB_ANY, VERB_ANY, 0,
      "Get/set per-interface DNSSEC NTA");
 static int verb_nta(int argc, char *argv[], uintptr_t _data, void *userdata) {
         _cleanup_(sd_bus_flush_close_unrefp) sd_bus *bus = NULL;
@@ -3127,7 +3129,7 @@ static int verb_nta(int argc, char *argv[], uintptr_t _data, void *userdata) {
         return 0;
 }
 
-VERB(verb_revert_link, "revert", "LINK", VERB_ANY, 2, 0,
+VERB(verb_revert_link, "revert", "LINK\0", VERB_ANY, 2, 0,
      "Revert per-interface configuration");
 static int verb_revert_link(int argc, char *argv[], uintptr_t _data, void *userdata) {
         _cleanup_(sd_bus_flush_close_unrefp) sd_bus *bus = NULL;
@@ -3166,19 +3168,34 @@ static int verb_revert_link(int argc, char *argv[], uintptr_t _data, void *userd
         return 0;
 }
 
-VERB(verb_log_level, "log-level", "[LEVEL]", VERB_ANY, 2, 0,
+VERB(verb_log_level, "log-level", "[LEVEL]\0", VERB_ANY, 2, 0,
      "Get/set logging threshold for systemd-resolved");
 static int verb_log_level(int argc, char *argv[], uintptr_t _data, void *userdata) {
-        _cleanup_(sd_bus_flush_close_unrefp) sd_bus *bus = NULL;
         int r;
 
-        r = acquire_bus(&bus);
+        _cleanup_(sd_varlink_unrefp) sd_varlink *vl = NULL;
+        r = sd_varlink_connect_address(&vl, "/run/systemd/resolve/io.systemd.Resolve");
         if (r < 0)
-                return r;
+                return log_error_errno(r, "Failed to connect to /run/systemd/resolve/io.systemd.Resolve: %m");
 
-        assert(IN_SET(argc, 1, 2));
+        if (argc == 1) {
+                /* Show current log level */
+                _cleanup_free_ char *level_str = NULL;
+                r = varlink_get_log_level_string(vl, &level_str);
+                if (r < 0)
+                        return r;
 
-        return verb_log_control_common(bus, "org.freedesktop.resolve1", argv[0], argc == 2 ? argv[1] : NULL);
+                puts(level_str);
+
+        } else if (argc == 2) {
+                /* Set new log level */
+                r = varlink_set_log_level_string(vl, argv[1]);
+                if (r < 0)
+                        return r;
+        } else
+                assert_not_reached();
+
+        return 0;
 }
 
 static int parse_protocol(const char *arg) {
@@ -3229,67 +3246,15 @@ static void help_dns_classes(void) {
         DUMP_STRING_TABLE(dns_class, int, _DNS_CLASS_MAX);
 }
 
-static int compat_help(void) {
-        _cleanup_(table_unrefp) Table *options = NULL;
-        int r;
+VERB_COMMON_HELP_AUTO_PROGRAM_HIDDEN("resolvectl");
 
-        r = option_parser_get_help_table_ns("systemd-resolve", &options);
-        if (r < 0)
-                return r;
-
-        pager_open(arg_pager_flags);
-
-        help_cmdline("[OPTIONS…] HOSTNAME|ADDRESS…");
-        help_cmdline("[OPTIONS…] --service [[NAME] TYPE] DOMAIN");
-        help_cmdline("[OPTIONS…] --openpgp EMAIL@DOMAIN…");
-        help_cmdline("[OPTIONS…] --statistics");
-        help_cmdline("[OPTIONS…] --reset-statistics");
-        help_abstract("Resolve domain names, IPv4 and IPv6 addresses, DNS records, and services.");
-
-        help_section("Options");
-        r = table_print_or_warn(options);
-        if (r < 0)
-                return r;
-
-        help_man_page_reference("resolvectl", "1");
-        return 0;
-}
-
-static int native_help(void) {
-        _cleanup_(table_unrefp) Table *verbs = NULL, *options = NULL;
-        int r;
-
-        r = verbs_get_help_table(&verbs);
-        if (r < 0)
-                return r;
-
-        r = option_parser_get_help_table_ns("resolvectl", &options);
-        if (r < 0)
-                return r;
-
-        (void) table_sync_column_widths(0, verbs, options);
-
-        pager_open(arg_pager_flags);
-
-        help_cmdline("[OPTIONS…] COMMAND …");
-        help_abstract("Send control commands to the network name resolution manager, or\n"
-                      "resolve domain names, IPv4 and IPv6 addresses, DNS records, and services.");
-
-        help_section("Commands");
-        r = table_print_or_warn(verbs);
-        if (r < 0)
-                return r;
-
-        help_section("Options");
-        r = table_print_or_warn(options);
-        if (r < 0)
-                return r;
-
-        help_man_page_reference("resolvectl", "1");
-        return 0;
-}
-
-VERB_COMMON_HELP_HIDDEN(native_help);
+COMMAND(
+        "systemd-resolve\0",
+        "This command is deprecated. Use resolvectl.1 instead.",
+        .man_pages = "resolvectl(1)\0",
+        .option_namespace = "systemd-resolve",
+        .pager_flags = &arg_pager_flags,
+);
 
 static int compat_parse_argv(int argc, char *argv[], char ***remaining_args) {
         int r;
@@ -3306,7 +3271,8 @@ static int compat_parse_argv(int argc, char *argv[], char ***remaining_args) {
                 OPTION_NAMESPACE("systemd-resolve"): {}
 
                 OPTION_COMMON_HELP:
-                        return compat_help();
+                        printf("systemd-resolve is deprecated. Call resolvectl instead.\n");
+                        return 0;
 
                 OPTION_COMMON_VERSION:
                         return version();
@@ -3378,6 +3344,7 @@ static int compat_parse_argv(int argc, char *argv[], char ***remaining_args) {
                         if (r < 0)
                                 return r;
                         SET_FLAG(arg_flags, SD_RESOLVED_NO_TXT, r == 0);
+                        arg_service_txt_set = true;
                         break;
 
                 OPTION_LONG("openpgp", NULL, "Query OpenPGP public key"):
@@ -3503,6 +3470,9 @@ static int compat_parse_argv(int argc, char *argv[], char ***remaining_args) {
                         if (r < 0)
                                 return r;
                         break;
+
+                OPTION_COMMON_INTROSPECT_CLI:
+                        return introspect_cli(arg_json_format_flags);
                 }
 
         if (arg_type == 0 && arg_class != 0)
@@ -3545,7 +3515,7 @@ static int native_parse_argv(int argc, char *argv[], char ***remaining_args) {
                 OPTION_NAMESPACE("resolvectl"): {}
 
                 OPTION_COMMON_HELP:
-                        return native_help();
+                        return command_print_help_name("resolvectl");
 
                 OPTION_COMMON_VERSION:
                         return version();
@@ -3612,6 +3582,7 @@ static int native_parse_argv(int argc, char *argv[], char ***remaining_args) {
                         if (r < 0)
                                 return r;
                         SET_FLAG(arg_flags, SD_RESOLVED_NO_TXT, r == 0);
+                        arg_service_txt_set = true;
                         break;
 
                 OPTION_LONG("cname", "BOOL", "Follow CNAME redirects (default: yes)"):
@@ -3729,7 +3700,13 @@ static int native_parse_argv(int argc, char *argv[], char ***remaining_args) {
                 OPTION_COMMON_LOWERCASE_J:
                         arg_json_format_flags = SD_JSON_FORMAT_PRETTY_AUTO|SD_JSON_FORMAT_COLOR_AUTO;
                         break;
+
+                OPTION_COMMON_INTROSPECT_CLI:
+                        return introspect_cli(arg_json_format_flags);
                 }
+
+        if (arg_raw != RAW_NONE && sd_json_format_enabled(arg_json_format_flags))
+                return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "--raw and --json= may not be combined.");
 
         if (arg_type == 0 && arg_class != 0)
                 return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
@@ -3864,6 +3841,9 @@ static int run(int argc, char **argv) {
         char **args = NULL;
         bool compat = false;
         int r;
+
+        LIBCRYPTO_NOTE(suggested);
+        LIBIDN2_NOTE(recommended);
 
         setlocale(LC_ALL, "");
         log_setup();

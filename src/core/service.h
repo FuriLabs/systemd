@@ -155,12 +155,15 @@ typedef struct Service {
         unsigned restart_steps;
         usec_t restart_usec;
         usec_t restart_max_delay_usec;
+        usec_t restart_randomized_delay_usec;        /* configured upper bound for the randomized restart delay */
+        usec_t restart_randomized_delay_chosen_usec; /* the value actually picked for the pending auto-restart */
         usec_t timeout_start_usec;
         usec_t timeout_stop_usec;
         usec_t timeout_abort_usec;
         bool timeout_abort_set;
         usec_t runtime_max_usec;
         usec_t runtime_rand_extra_usec;
+        usec_t revalidate_runtime_begin_usec;
         ServiceTimeoutFailureMode timeout_start_failure_mode;
         ServiceTimeoutFailureMode timeout_stop_failure_mode;
 
@@ -224,6 +227,7 @@ typedef struct Service {
         bool exec_fd_hot:1;
 
         char *bus_name;
+        sd_event_source *bus_name_grace_event_source;
 
         char *status_text;
         char *status_bus_error;
@@ -245,6 +249,8 @@ typedef struct Service {
         size_t n_fd_store;
         unsigned n_fd_store_max;
         ExecPreserveMode fd_store_preserve_mode;
+
+        char **luo_sessions; /* LUOSession= setting — list of session names to create/manage */
 
         int stdin_fd;
         int stdout_fd;

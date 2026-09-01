@@ -42,7 +42,6 @@ basic_sources = files(
         'format-ifname.c',
         'format-util.c',
         'fs-util.c',
-        'gcrypt-util.c',
         'glob-util.c',
         'glyph-util.c',
         'gunicode.c',
@@ -204,8 +203,7 @@ basic_sources += [filesystem_sets_c, filesystems_gperf_h]
 
 test('kernel-filesystem-magics',
      filesystem_sets_py,
-     args : ['check'],
-     env : ['CPP=@0@'.format(cpp)])
+     args : ['check', cpp, system_include_args])
 
 libbasic_static = static_library(
         'basic',
@@ -214,7 +212,6 @@ libbasic_static = static_library(
         include_directories : basic_includes,
         implicit_include_directories : false,
         dependencies : [libbzip2_cflags,
-                        libgcrypt_cflags,
                         liblz4_cflags,
                         libxz_cflags,
                         libz_cflags,

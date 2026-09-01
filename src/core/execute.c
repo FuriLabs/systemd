@@ -4,7 +4,7 @@
 #include <poll.h>
 #include <sys/mman.h>
 #include <sys/mount.h>
-#include <sys/prctl.h>
+#include <sys/prctl.h> /* IWYU pragma: keep */
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -479,7 +479,6 @@ int exec_spawn(
         assert(unit);
         assert(unit->manager);
         assert(unit->manager->executor_fd >= 0);
-        assert(unit->manager->executor_path);
         assert(command);
         assert(context);
         assert(params);
@@ -580,7 +579,7 @@ int exec_spawn(
         /* The executor binary is pinned, to avoid compatibility problems during upgrades. */
         r = posix_spawn_wrapper(
                         FORMAT_PROC_FD_PATH(unit->manager->executor_fd),
-                        STRV_MAKE(unit->manager->executor_path,
+                        STRV_MAKE("systemd-executor",
                                   "--deserialize", serialization_fd_number,
                                   "--log-level", max_log_levels,
                                   "--log-target", log_target_to_string(manager_get_executor_log_target(unit->manager))),
@@ -1576,7 +1575,7 @@ void exec_context_dump(const ExecContext *c, FILE* f, const char *prefix) {
                         fputc('~', f);
 
 #if HAVE_SECCOMP
-                if (DLOPEN_LIBSECCOMP(LOG_DEBUG, SD_ELF_NOTE_DLOPEN_PRIORITY_RECOMMENDED) >= 0) {
+                if (dlopen_libseccomp(LOG_DEBUG) >= 0) {
                         void *id, *val;
                         bool first = true;
                         HASHMAP_FOREACH_KEY(val, id, c->syscall_filter) {
@@ -1973,9 +1972,11 @@ uint64_t exec_context_get_timer_slack_nsec(const ExecContext *c) {
         if (c->timer_slack_nsec != NSEC_INFINITY)
                 return c->timer_slack_nsec;
 
-        r = prctl(PR_GET_TIMERSLACK);
-        if (r < 0)
+        r = prctl_safe(PR_GET_TIMERSLACK, 0, 0, 0, 0);
+        if (r < 0) {
                 log_debug_errno(r, "Failed to get timer slack, ignoring: %m");
+                return 0;
+        }
 
         return (uint64_t) MAX(r, 0);
 }
@@ -1995,7 +1996,7 @@ char** exec_context_get_syscall_filter(const ExecContext *c) {
         assert(c);
 
 #if HAVE_SECCOMP
-        if (DLOPEN_LIBSECCOMP(LOG_DEBUG, SD_ELF_NOTE_DLOPEN_PRIORITY_RECOMMENDED) < 0)
+        if (dlopen_libseccomp(LOG_DEBUG) < 0)
                 return strv_new(NULL);
 
         void *id, *val;
@@ -2064,7 +2065,7 @@ char** exec_context_get_syscall_log(const ExecContext *c) {
         assert(c);
 
 #if HAVE_SECCOMP
-        if (DLOPEN_LIBSECCOMP(LOG_DEBUG, SD_ELF_NOTE_DLOPEN_PRIORITY_RECOMMENDED) < 0)
+        if (dlopen_libseccomp(LOG_DEBUG) < 0)
                 return strv_new(NULL);
 
         void *id, *val;
@@ -2510,6 +2511,7 @@ static int exec_shared_runtime_make(
         assert(m);
         assert(c);
         assert(id);
+        assert(ret);
 
         /* It is not necessary to create ExecSharedRuntime object. */
         if (!c->user_namespace_path && !exec_needs_network_namespace(c) && !exec_needs_ipc_namespace(c) &&

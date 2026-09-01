@@ -1,8 +1,7 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 #pragma once
 
-#include "basic-forward.h"
-#include "sd-forward.h"
+#include "forward.h"
 
 #define LUO_SESSION_NAME "systemd"
 
@@ -12,6 +11,7 @@
  *
  *   {
  *     "version": 1,
+ *     "state": { },
  *     "units": {
  *       "unit-name.service": {
  *         "fdstore": [
@@ -36,7 +36,10 @@ int luo_session_preserve_fd(int session_fd, int fd, uint64_t token);
 int luo_session_retrieve_fd(int session_fd, uint64_t token);
 int luo_session_finish(int session_fd);
 
+bool luo_session_name_is_valid(const char *name);
+
 int luo_parse_serialization(sd_json_variant **ret, int **ret_fds, size_t *ret_n_fds);
+int luo_serialization_add_shutdown_timestamps(sd_json_variant **serialization, const dual_timestamp *shutdown_late_start, const dual_timestamp *shutdown_late_finish);
 int luo_preserve_fd_stores(sd_json_variant *serialization, int *ret_session_fd);
 
 int fd_is_luo_session(int fd);

@@ -5,7 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/mount.h>
-#include <sys/prctl.h>
+#include <sys/prctl.h> /* IWYU pragma: keep */
 #include <unistd.h>
 
 #include "sd-event.h"
@@ -304,7 +304,7 @@ static void _test(const char *file, unsigned line, const char *func,
 
         ASSERT_NOT_NULL(unit_name);
 
-        ASSERT_OK(manager_load_startable_unit_or_warn(m, unit_name, NULL, &unit));
+        ASSERT_OK(manager_load_startable_unit_or_warn(m, unit_name, NULL, LOG_ERR, &unit));
         /* We need to start the slices as well otherwise the slice cgroups might be pruned
          * in on_cgroup_empty_event. */
         start_parent_slices(unit);
@@ -322,7 +322,7 @@ static void _test_service(const char *file, unsigned line, const char *func,
 
         ASSERT_NOT_NULL(unit_name);
 
-        ASSERT_OK(manager_load_startable_unit_or_warn(m, unit_name, NULL, &unit));
+        ASSERT_OK(manager_load_startable_unit_or_warn(m, unit_name, NULL, LOG_ERR, &unit));
         ASSERT_OK(unit_start(unit, NULL));
         check_service_result(file, line, func, m, unit, result_expected);
 }
@@ -332,11 +332,27 @@ static void _test_service(const char *file, unsigned line, const char *func,
 static void test_exec_bindpaths(Manager *m) {
         ASSERT_OK(mkdir_p("/tmp/test-exec-bindpaths", 0755));
         ASSERT_OK(mkdir_p("/tmp/test-exec-bindreadonlypaths", 0755));
+        ASSERT_OK(mkdir_p("/tmp/test-exec-bindpaths source", 0755));
+        ASSERT_OK(mkdir_p("/tmp/test-exec-bindpaths destination", 0755));
+        ASSERT_OK(mkdir_p("/tmp/test-exec-bindpaths:source", 0755));
+        ASSERT_OK(mkdir_p("/tmp/test-exec-bindpaths:destination", 0755));
+        ASSERT_OK(mkdir_p("/tmp/test-exec-bindreadonlypaths source", 0755));
+        ASSERT_OK(mkdir_p("/tmp/test-exec-bindreadonlypaths destination", 0755));
+        ASSERT_OK(mkdir_p("/tmp/test-exec-bindreadonlypaths:source", 0755));
+        ASSERT_OK(mkdir_p("/tmp/test-exec-bindreadonlypaths:destination", 0755));
 
         test(m, "exec-bindpaths.service", can_unshare ? 0 : EXIT_NAMESPACE, CLD_EXITED);
 
         (void) rm_rf("/tmp/test-exec-bindpaths", REMOVE_ROOT|REMOVE_PHYSICAL);
         (void) rm_rf("/tmp/test-exec-bindreadonlypaths", REMOVE_ROOT|REMOVE_PHYSICAL);
+        (void) rm_rf("/tmp/test-exec-bindpaths source", REMOVE_ROOT|REMOVE_PHYSICAL);
+        (void) rm_rf("/tmp/test-exec-bindpaths destination", REMOVE_ROOT|REMOVE_PHYSICAL);
+        (void) rm_rf("/tmp/test-exec-bindpaths:source", REMOVE_ROOT|REMOVE_PHYSICAL);
+        (void) rm_rf("/tmp/test-exec-bindpaths:destination", REMOVE_ROOT|REMOVE_PHYSICAL);
+        (void) rm_rf("/tmp/test-exec-bindreadonlypaths source", REMOVE_ROOT|REMOVE_PHYSICAL);
+        (void) rm_rf("/tmp/test-exec-bindreadonlypaths destination", REMOVE_ROOT|REMOVE_PHYSICAL);
+        (void) rm_rf("/tmp/test-exec-bindreadonlypaths:source", REMOVE_ROOT|REMOVE_PHYSICAL);
+        (void) rm_rf("/tmp/test-exec-bindreadonlypaths:destination", REMOVE_ROOT|REMOVE_PHYSICAL);
 }
 
 static void test_exec_cpuaffinity(Manager *m) {
@@ -1140,6 +1156,10 @@ static void test_exec_runtimedirectory(Manager *m) {
         test(m, "exec-runtimedirectory.service", 0, CLD_EXITED);
         (void) rm_rf("/run/test-exec_runtimedirectory2", REMOVE_ROOT|REMOVE_PHYSICAL);
 
+        (void) rm_rf("/run/test-exec_runtimedirectory-escape", REMOVE_ROOT|REMOVE_PHYSICAL);
+        test(m, "exec-runtimedirectory@foo\\x2dv1.service", 0, CLD_EXITED);
+        (void) rm_rf("/run/test-exec_runtimedirectory-escape", REMOVE_ROOT|REMOVE_PHYSICAL);
+
         test(m, "exec-runtimedirectory-mode.service", 0, CLD_EXITED);
         test(m, "exec-runtimedirectory-owner.service", MANAGER_IS_SYSTEM(m) ? 0 : EXIT_GROUP, CLD_EXITED);
 
@@ -1195,8 +1215,8 @@ static void test_exec_ambientcapabilities(Manager *m) {
          * the tests only if that's the case. Clearing all ambient
          * capabilities is fine, since we are expecting them to be unset
          * in the first place for the tests. */
-        r = prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_CLEAR_ALL, 0, 0, 0);
-        if (r < 0 && IN_SET(errno, EINVAL, EOPNOTSUPP, ENOSYS)) {
+        r = prctl_safe(PR_CAP_AMBIENT, PR_CAP_AMBIENT_CLEAR_ALL, 0, 0, 0);
+        if (r < 0 && IN_SET(r, -EINVAL, -EOPNOTSUPP, -ENOSYS)) {
                 log_notice("Skipping %s, the kernel does not support ambient capabilities", __func__);
                 return;
         }

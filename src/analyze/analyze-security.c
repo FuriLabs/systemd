@@ -626,7 +626,7 @@ static int assess_system_call_filter(
         uint64_t b;
         int r;
 
-        r = DLOPEN_LIBSECCOMP(LOG_DEBUG, SD_ELF_NOTE_DLOPEN_PRIORITY_RECOMMENDED);
+        r = dlopen_libseccomp(LOG_DEBUG);
         if (r < 0) {
                 *ret_badness = UINT64_MAX;
                 *ret_description = NULL;
@@ -2604,7 +2604,7 @@ static int get_security_info(Unit *u, ExecContext *c, CGroupContext *g, RuntimeS
                 info->_umask = c->umask;
 
 #if HAVE_SECCOMP
-                if (DLOPEN_LIBSECCOMP(LOG_DEBUG, SD_ELF_NOTE_DLOPEN_PRIORITY_RECOMMENDED) >= 0) {
+                if (dlopen_libseccomp(LOG_DEBUG) >= 0) {
                         SET_FOREACH(key, c->syscall_archs) {
                                 const char *name;
 
@@ -2792,7 +2792,7 @@ static int offline_security_checks(
                                 return log_error_errno(r, "Failed to copy: %m");
                 }
 
-                k = manager_load_startable_unit_or_warn(m, NULL, prepared, &units[count]);
+                k = manager_load_startable_unit_or_warn(m, /* name= */ NULL, prepared, LOG_ERR, &units[count]);
                 if (k < 0) {
                         RET_GATHER(r, k);
                         continue;

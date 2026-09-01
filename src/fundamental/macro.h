@@ -83,6 +83,11 @@
 #define _hidden_ __attribute__((__visibility__("hidden")))
 #define _likely_(x) (__builtin_expect(!!(x), 1))
 #define _malloc_ __attribute__((__malloc__))
+#ifdef __clang__
+#  define _noclone_
+#else
+#  define _noclone_ __attribute__((noclone))
+#endif
 #define _noinline_ __attribute__((noinline))
 #define _noreturn_ _Noreturn
 #define _packed_ __attribute__((__packed__))
@@ -514,7 +519,7 @@ assert_cc(STRLEN(__FILE__) > STRLEN(RELATIVE_SOURCE_PATH) + 1);
 #define PROJECT_FILE (&__FILE__[STRLEN(RELATIVE_SOURCE_PATH) + 1])
 
 /* In GCC 14 (C23) we can force enums to have the right types, and not solely rely on language extensions anymore */
-#if (__GNUC__ >= 14 || __STDC_VERSION__ >= 202311L) && !defined(__EDG__)
+#if __GNUC__ >= 14 || __STDC_VERSION__ >= 202311L
 #  define ENUM_TYPE_S64(id) id : int64_t
 #else
 #  define ENUM_TYPE_S64(id) id
