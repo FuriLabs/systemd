@@ -1,3 +1,31 @@
+systemd (262~rc1-1) unstable; urgency=medium
+
+  [ Luca Boccassi ]
+  * Update d/copyright
+  * d/t/control: add dependencies missing for incus image (Closes:
+    #1144870)
+  * d/t/localed-locale: clean up on any error with a trap
+  * d/t/localed-locale: skip in Debian, not supported. (Closes: #1145087)
+  * Update upstream source from tag 'upstream/262_rc1' Update to upstream
+    version '262~rc1' with Debian dir
+    3f5ed66a0859f1f43014aa01b4685b33b0663eab
+    For more information, see:
+    https://github.com/systemd/systemd/releases/tag/v262-rc1
+  * Install new files for upstream build
+  * Update symbols file for upstream release
+  * Update Lintian overrides for new units
+  * Update d/copyright
+
+  [ Yu Watanabe ]
+  * Drop deprecated meson option. The meson option -Dlibiptc= was
+    deprecated in v259.
+
+  [ Nick Rosbrook ]
+  * d/systemd.links: stop creating cryptdisks{,-early}.service masks
+    (LP: #2153836)
+
+ -- Luca Boccassi <bluca@debian.org>  Tue, 01 Sep 2026 11:51:07 +0100
+
 systemd (261.2-1) unstable; urgency=medium
 
   [ Luca Boccassi ]
