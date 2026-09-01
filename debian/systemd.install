@@ -238,7 +238,7 @@ usr/lib/systemd/system/sockets.target.wants/systemd-journald.socket
 usr/lib/systemd/system/sockets.target.wants/systemd-logind-varlink.socket
 usr/lib/systemd/system/sockets.target.wants/systemd-mute-console.socket
 usr/lib/systemd/system/sockets.target.wants/systemd-sysext.socket
-<pkg.systemd.upstream> usr/lib/systemd/system/sockets.target.wants/systemd-sysinstall.socket
+usr/lib/systemd/system/sockets.target.wants/systemd-sysinstall.socket
 usr/lib/systemd/system/soft-reboot.target
 usr/lib/systemd/system/sound.target
 usr/lib/systemd/system/ssh-access.target
@@ -312,8 +312,8 @@ usr/lib/systemd/system/systemd-hostnamed.service
 usr/lib/systemd/system/systemd-hostnamed.socket
 usr/lib/systemd/system/systemd-hybrid-sleep.service
 usr/lib/systemd/system/systemd-journal-catalog-update.service
-<pkg.systemd.upstream> usr/lib/systemd/system/systemd-journalctl-metrics.socket
-<pkg.systemd.upstream> usr/lib/systemd/system/systemd-journalctl-metrics@.service
+usr/lib/systemd/system/systemd-journalctl-metrics.socket
+usr/lib/systemd/system/systemd-journalctl-metrics@.service
 usr/lib/systemd/system/systemd-journalctl.socket
 usr/lib/systemd/system/systemd-journalctl@.service
 usr/lib/systemd/system/systemd-journald-audit.socket
@@ -331,7 +331,7 @@ usr/lib/systemd/system/systemd-logind.service
 usr/lib/systemd/system/systemd-logind-varlink.socket
 usr/lib/systemd/system/systemd-loop@.service
 usr/lib/systemd/system/systemd-machine-id-commit.service
-<pkg.systemd.upstream> usr/lib/systemd/system/systemd-machine-tag@.service
+usr/lib/systemd/system/systemd-machine-tag@.service
 usr/lib/systemd/system/systemd-mute-console.socket
 usr/lib/systemd/system/systemd-mute-console@.service
 usr/lib/systemd/system/systemd-networkd*.service
@@ -352,10 +352,10 @@ usr/lib/systemd/system/systemd-suspend-then-hibernate.service
 usr/lib/systemd/system/systemd-sysctl.service
 usr/lib/systemd/system/systemd-sysext*
 usr/lib/systemd/system/systemd-sysinstall.service
-<pkg.systemd.upstream> usr/lib/systemd/system/systemd-sysinstall.socket
-<pkg.systemd.upstream> usr/lib/systemd/system/systemd-sysinstall@.service
-<pkg.systemd.upstream> usr/lib/systemd/system/systemd-sysupdate-notify-sysext.socket
-<pkg.systemd.upstream> usr/lib/systemd/system/systemd-sysupdate-notify-sysext@.service
+usr/lib/systemd/system/systemd-sysinstall.socket
+usr/lib/systemd/system/systemd-sysinstall@.service
+usr/lib/systemd/system/systemd-sysupdate-notify-sysext.socket
+usr/lib/systemd/system/systemd-sysupdate-notify-sysext@.service
 usr/lib/systemd/system/systemd-sysusers.service
 usr/lib/systemd/system/systemd-timedated.service
 usr/lib/systemd/system/systemd-tmpfiles-clean.service
@@ -487,7 +487,7 @@ usr/share/locale/
 usr/share/mime/packages/io.systemd.xml
 usr/share/polkit-1/actions/io.systemd.ask-password.policy
 usr/share/polkit-1/actions/io.systemd.credentials.policy
-<pkg.systemd.upstream> usr/share/polkit-1/actions/io.systemd.sysinstall.policy
+usr/share/polkit-1/actions/io.systemd.sysinstall.policy
 usr/share/polkit-1/actions/org.freedesktop.hostname1.policy
 usr/share/polkit-1/actions/org.freedesktop.locale1.policy
 usr/share/polkit-1/actions/org.freedesktop.login1.policy

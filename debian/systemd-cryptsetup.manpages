@@ -1,11 +1,11 @@
 #!/usr/bin/dh-exec
 debian/tmp/usr/share/man/man1/systemd-cryptenroll.1
-<pkg.systemd.upstream> debian/tmp/usr/share/man/man5/clonetab.5
+debian/tmp/usr/share/man/man5/clonetab.5
 debian/tmp/usr/share/man/man5/integritytab.5
 debian/tmp/usr/share/man/man5/veritytab.5
-<pkg.systemd.upstream> debian/tmp/usr/share/man/man8/systemd-clonesetup-generator.8
-<pkg.systemd.upstream> debian/tmp/usr/share/man/man8/systemd-clonesetup.8
-<pkg.systemd.upstream> debian/tmp/usr/share/man/man8/systemd-clonesetup@.service.8
+debian/tmp/usr/share/man/man8/systemd-clonesetup-generator.8
+debian/tmp/usr/share/man/man8/systemd-clonesetup.8
+debian/tmp/usr/share/man/man8/systemd-clonesetup@.service.8
 debian/tmp/usr/share/man/man8/systemd-cryptsetup.8
 debian/tmp/usr/share/man/man8/systemd-cryptsetup-generator.8
 debian/tmp/usr/share/man/man8/systemd-cryptsetup@.service.8

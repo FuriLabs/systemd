@@ -5,7 +5,6 @@ usr/bin/udevadm
 usr/lib/systemd/network/99-default.link
 usr/lib/systemd/systemd-modules-load
 usr/lib/systemd/systemd-udevd
-<!pkg.systemd.upstream> usr/lib/systemd/system/sockets.target.wants/systemd-udevd-control.socket
 usr/lib/systemd/system/sockets.target.wants/systemd-udevd-kernel.socket
 usr/lib/systemd/system/sockets.target.wants/systemd-udevd-varlink.socket
 usr/lib/systemd/system/sysinit.target.wants/systemd-hwdb-update.service
@@ -45,14 +44,14 @@ usr/lib/udev/rules.d/60-input-id.rules
 usr/lib/udev/rules.d/60-persistent-alsa.rules
 usr/lib/udev/rules.d/60-persistent-hidraw.rules
 usr/lib/udev/rules.d/60-persistent-input.rules
-<pkg.systemd.upstream> usr/lib/udev/rules.d/60-persistent-media-controller.rules
+usr/lib/udev/rules.d/60-persistent-media-controller.rules
 usr/lib/udev/rules.d/60-persistent-storage-mtd.rules
 usr/lib/udev/rules.d/60-persistent-storage.rules
 usr/lib/udev/rules.d/60-persistent-storage-tape.rules
 usr/lib/udev/rules.d/60-persistent-v4l.rules
 usr/lib/udev/rules.d/60-sensor.rules
 usr/lib/udev/rules.d/60-serial.rules
-usr/lib/udev/rules.d/60-tpm2-id.rules
+[amd64 i386 arm64 armhf riscv64 loong64] <!stage1> usr/lib/udev/rules.d/60-tpm2-id.rules
 usr/lib/udev/rules.d/64-btrfs.rules
 usr/lib/udev/rules.d/65-integration.rules
 usr/lib/udev/rules.d/70-camera.rules

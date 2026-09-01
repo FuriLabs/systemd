@@ -3,7 +3,6 @@ usr/bin/importctl
 usr/bin/storagectl
 <pkg.systemd.upstream> usr/bin/updatectl
 usr/bin/systemd-mstack
-<!pkg.systemd.upstream> usr/bin/systemd-sysupdate
 usr/bin/systemd-vmspawn
 usr/lib/systemd/system/systemd-vmspawn@.service
 usr/bin/machinectl
@@ -26,7 +25,7 @@ usr/lib/systemd/systemd-sysupdate*
 usr/lib/systemd/system-generators/systemd-import-generator
 usr/lib/systemd/system/sockets.target.wants/systemd-import*
 usr/lib/systemd/system/sockets.target.wants/systemd-storage-*.socket
-<pkg.systemd.upstream> usr/lib/systemd/system/sockets.target.wants/systemd-sysupdate.socket
+usr/lib/systemd/system/sockets.target.wants/systemd-sysupdate.socket
 usr/lib/systemd/system/systemd-nspawn@.service
 usr/lib/systemd/system/systemd-import*
 usr/lib/systemd/system/systemd-machined*
@@ -36,12 +35,12 @@ usr/lib/systemd/system/systemd-portabled.service
 usr/lib/systemd/system/systemd-storage-*
 usr/lib/systemd/system/systemd-sysupdate-reboot.service
 usr/lib/systemd/system/systemd-sysupdate-reboot.timer
-<pkg.systemd.upstream> usr/lib/systemd/system/systemd-sysupdate-auto-enable.service
-<pkg.systemd.upstream> usr/lib/systemd/system/systemd-sysupdate-update.service
-<pkg.systemd.upstream> usr/lib/systemd/system/systemd-sysupdate-update.timer
-<pkg.systemd.upstream> usr/lib/systemd/system/systemd-sysupdate@.service
+usr/lib/systemd/system/systemd-sysupdate-auto-enable.service
+usr/lib/systemd/system/systemd-sysupdate-update.service
+usr/lib/systemd/system/systemd-sysupdate-update.timer
+usr/lib/systemd/system/systemd-sysupdate@.service
 usr/lib/systemd/system/systemd-sysupdate.service
-<pkg.systemd.upstream> usr/lib/systemd/system/systemd-sysupdate.socket
+usr/lib/systemd/system/systemd-sysupdate.socket
 usr/lib/systemd/system/systemd-sysupdate.timer
 <pkg.systemd.upstream> usr/lib/systemd/system/systemd-sysupdated.service
 usr/lib/systemd/system/var-lib-machines.mount
@@ -96,7 +95,7 @@ usr/share/polkit-1/actions/org.freedesktop.machine1.policy
 usr/share/polkit-1/actions/org.freedesktop.portable1.policy
 <pkg.systemd.upstream> usr/share/polkit-1/actions/org.freedesktop.sysupdate1.policy
 usr/share/zsh/vendor-completions/_systemd-nspawn
-<pkg.systemd.upstream> usr/share/zsh/vendor-completions/_systemd-sysupdate
+usr/share/zsh/vendor-completions/_systemd-sysupdate
 <pkg.systemd.upstream> usr/share/zsh/vendor-completions/_updatectl
 usr/share/zsh/vendor-completions/_sd_machines
 usr/share/zsh/vendor-completions/_machinectl
@@ -105,7 +104,7 @@ usr/share/bash-completion/completions/machinectl
 usr/share/bash-completion/completions/portablectl
 usr/share/bash-completion/completions/storagectl
 usr/share/bash-completion/completions/systemd-nspawn
-<pkg.systemd.upstream> usr/share/bash-completion/completions/systemd-sysupdate
+usr/share/bash-completion/completions/systemd-sysupdate
 <pkg.systemd.upstream> usr/share/bash-completion/completions/updatectl
 usr/share/bash-completion/completions/systemd-vmspawn
 usr/share/bash-completion/completions/importctl
