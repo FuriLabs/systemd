@@ -1,3 +1,16 @@
+systemd (262-1) unstable; urgency=medium
+
+  [ Nick Rosbrook ]
+  * d/systemd.links: stop creating hwclock.service mask
+
+  [ Luca Boccassi ]
+  * Update upstream source from tag 'upstream/262' Update to upstream
+    version '262' with Debian dir 10e9229f0dc2e42cec81a50b551ef78a0035a75c
+    For more information, see:
+    https://github.com/systemd/systemd/releases/tag/v262
+
+ -- Luca Boccassi <bluca@debian.org>  Tue, 22 Sep 2026 15:21:47 +0200
+
 systemd (262~rc3-1) unstable; urgency=medium
 
   [ Nick Rosbrook ]
